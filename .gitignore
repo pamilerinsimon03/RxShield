@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+rxshield-pipeline/.venv/
+venv/
+
+# JavaScript / Next.js
+node_modules/
+.next/
+out/
+
+# Massive Raw Data Assets
+rxshield-pipeline/data/1_raw/
+rxshield-pipeline/data/2_processed/
+rxshield-pipeline/data/3_output/synthetic_images/
