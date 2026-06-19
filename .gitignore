@@ -1,16 +1,64 @@
-# Python
+.DS_Store
+Thumbs.db
+desktop.ini
+
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 .venv/
-rxshield-pipeline/.venv/
 venv/
+ENV/
+env/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+pip-log.txt
+pip-delete-this-directory.txt
 
-# JavaScript / Next.js
 node_modules/
 .next/
 out/
+build/
+dist/
+.vercel
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
 
-# Massive Raw Data Assets
-rxshield-pipeline/data/1_raw/
-rxshield-pipeline/data/2_processed/
-rxshield-pipeline/data/3_output/synthetic_images/
+# Environment Variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env*.local
+
+rxshield-pipeline/data/raw/*
+rxshield-pipeline/data/processed/*
+rxshield-pipeline/data/output/*
+
+# Relational Database Binaries
+*.db
+*.sqlite
+*.sqlite3
+
+# Cross-Boundary Public Assets
+rxshield-web/public/assets/rxshield_core.db
+rxshield-web/public/database/rxshield_core.db
+
+# Logs & Diagnostics
+*.log
+
+# Models
+rxshield-web/public/models/crnn_int8.onnx
+rxshield-pipeline/crnn_int8.onnx
+rxshield-pipeline/crnn.onnx
+rxshield-pipeline/best_model.pth
+
+# ONNX Runtime WASM Binaries
+rxshield-web/public/wasm/ort-wasm-simd-threaded*
+
+**/context/specs
