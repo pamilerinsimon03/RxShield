@@ -62,3 +62,7 @@ rxshield-pipeline/best_model.pth
 rxshield-web/public/wasm/ort-wasm-simd-threaded*
 
 **/context/specs
+
+# Force-track production-ready assets for static web hosting
+!rxshield-web/public/database/rxshield_core.db
+!rxshield-web/public/models/crnn_int8.onnx
