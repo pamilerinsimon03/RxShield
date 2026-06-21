@@ -1,6 +1,9 @@
 # RxShield: Offline-First Local-Edge Clinical Safety Engine
 
+**Live Deployment:** [rx-shield-phi.vercel.app](https://rx-shield-phi.vercel.app/)
+
 RxShield is an offline-first, mobile-optimized Progressive Web App (PWA) designed to intercept medication prescription errors at the point of dispensing in understaffed, power-unstable clinical settings (such as rural Nigerian hospitals). 
+
 
 By combining an on-device WebAssembly (WASM) computer vision pipeline with a highly compressed, localized SQLite clinical rule engine, the application allows frontline pharmacists and nurses to capture an image of a handwritten prescription, instantly extract drug names and dosages, and evaluate them against the official **Nigeria Standard Treatment Guidelines (NSTG)** and drug-drug interaction tables—completely without internet access or cloud server dependencies.
 
