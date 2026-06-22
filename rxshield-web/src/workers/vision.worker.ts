@@ -2,6 +2,7 @@
 import * as Comlink from 'comlink';
 // @ts-ignore
 import * as ort from 'onnxruntime-web';
+import { adaptiveThresholdBradley } from '../utils/imageUtils';
 
 // Configure wasm path
 ort.env.wasm.wasmPaths = '/wasm/';
@@ -16,9 +17,8 @@ const CHARS = [
   "t", "u", "v", "w", "x", "y", "z"
 ];
 
-// Helper to resize and grayscale ImageData into Float32Array (128x512)
-// Helper to resize and grayscale ImageData into Float32Array (128x512)
-const preprocessImageData = (
+// Helper to resize and grayscale ImageData into Float32Array (128x512) using Letterboxing
+const preprocessLetterbox = (
   rgbaData: Uint8ClampedArray,
   srcW: number,
   srcH: number,
@@ -26,40 +26,51 @@ const preprocessImageData = (
   destH: number = 128
 ): Float32Array => {
   const output = new Float32Array(destW * destH);
-  
-  // Fill background with white (1.0)
   output.fill(1.0);
-
-  // Preserve aspect ratio
   const scale = Math.min(destW / srcW, destH / srcH);
   const newW = Math.floor(srcW * scale);
   const newH = Math.floor(srcH * scale);
-
-  // Centering offsets
   const dx = Math.floor((destW - newW) / 2);
   const dy = Math.floor((destH - newH) / 2);
 
-  // Map destination coordinates in the centered box back to source
   for (let y = 0; y < newH; y++) {
     const destY = dy + y;
     const srcY = Math.min(srcH - 1, Math.floor(y / scale));
-
     for (let x = 0; x < newW; x++) {
       const destX = dx + x;
       const srcX = Math.min(srcW - 1, Math.floor(x / scale));
-
       const srcIdx = (srcY * srcW + srcX) * 4;
       const r = rgbaData[srcIdx];
       const g = rgbaData[srcIdx + 1];
       const b = rgbaData[srcIdx + 2];
-
-      // Grayscale Y = 0.299R + 0.587G + 0.114B
       const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-      // Normalize to [-1.0, 1.0] range to match model training expectations
       output[destY * destW + destX] = (gray / 255.0 - 0.5) / 0.5;
     }
   }
+  return output;
+};
 
+// Helper to resize and grayscale ImageData into Float32Array (128x512) using Stretching
+const preprocessStretched = (
+  rgbaData: Uint8ClampedArray,
+  srcW: number,
+  srcH: number,
+  destW: number = 512,
+  destH: number = 128
+): Float32Array => {
+  const output = new Float32Array(destW * destH);
+  for (let y = 0; y < destH; y++) {
+    const srcY = Math.min(srcH - 1, Math.floor(y * srcH / destH));
+    for (let x = 0; x < destW; x++) {
+      const srcX = Math.min(srcW - 1, Math.floor(x * srcW / destW));
+      const srcIdx = (srcY * srcW + srcX) * 4;
+      const r = rgbaData[srcIdx];
+      const g = rgbaData[srcIdx + 1];
+      const b = rgbaData[srcIdx + 2];
+      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+      output[y * destW + x] = (gray / 255.0 - 0.5) / 0.5;
+    }
+  }
   return output;
 };
 
@@ -575,64 +586,51 @@ const api = {
     rgbaBuffer: Uint8ClampedArray,
     width: number,
     height: number
-  ): Promise<{ text: string; confidence: number }> {
+  ): Promise<{
+    candidates: { wordL: string; wordS: string }[]
+  }> {
     try {
       if (!session) {
         await this.initModel();
       }
 
-      // 1. Detect global bounding box of all ink in the line strip
-      console.log(`[OCR] Detecting global bounding box on binarized image (${width}x${height})...`);
-      const globalBbox = findGlobalBoundingBox(rgbaBuffer, width, height, 2);
-      console.log(`[OCR] Global BBox: x=${globalBbox.x}, y=${globalBbox.y}, w=${globalBbox.w}, h=${globalBbox.h}`);
+      // 1. Apply Adaptive Thresholding
+      const binarizedBuffer = adaptiveThresholdBradley(width, height, rgbaBuffer, 25, 15);
 
-      // 2. Segment the global bounding box into separate words
-      const wordBoxes = segmentLineIntoWords(rgbaBuffer, width, height, globalBbox, 1);
-      console.log(`[OCR] Segmented line into ${wordBoxes.length} word box(es)`);
+      // 2. Detect global bounding box of all ink
+      const globalBbox = findGlobalBoundingBox(binarizedBuffer, width, height, 2);
 
-      const decodedWords: string[] = [];
+      // 3. Segment into words
+      const wordBoxes = segmentLineIntoWords(binarizedBuffer, width, height, globalBbox, 1);
 
-      // 3. Process each word individually
+      const candidates: { wordL: string; wordS: string }[] = [];
+
+      // 4. Process each word with dual preprocessing
       for (let i = 0; i < wordBoxes.length; i++) {
         const box = wordBoxes[i];
-        console.log(`[OCR] Word segment ${i + 1}/${wordBoxes.length}: x=${box.x}, y=${box.y}, w=${box.w}, h=${box.h}`);
+        const subBuffer = extractSubImage(binarizedBuffer, width, box);
         
-        // 4. Crop image to local word bounding box
-        const subBuffer = extractSubImage(rgbaBuffer, width, box);
+        // Pass 1: Letterbox
+        const floatL = preprocessLetterbox(subBuffer, box.w, box.h, 512, 128);
+        const tensorL = new ort.Tensor('float32', floatL, [1, 1, 128, 512]);
+        const resL = await session.run({ input_images: tensorL });
+        const logitsL = resL.output_logits;
+        const wordL = decodeCTC(logitsL.data as Float32Array, logitsL.dims[1], logitsL.dims[2]);
+
+        // Pass 2: Stretched
+        const floatS = preprocessStretched(subBuffer, box.w, box.h, 512, 128);
+        const tensorS = new ort.Tensor('float32', floatS, [1, 1, 128, 512]);
+        const resS = await session.run({ input_images: tensorS });
+        const logitsS = resS.output_logits;
+        const wordS = decodeCTC(logitsS.data as Float32Array, logitsS.dims[1], logitsS.dims[2]);
         
-        // 5. Preprocess (resize and letterbox to 512x128 preserving aspect ratio)
-        const floatData = preprocessImageData(subBuffer, box.w, box.h, 512, 128);
-        
-        // 6. Create ONNX Tensor and execute inference
-        const tensor = new ort.Tensor('float32', floatData, [1, 1, 128, 512]);
-        const feeds = { input_images: tensor };
-        const results = await session.run(feeds);
-        
-        const outputTensor = results.output_logits;
-        const [, timeSteps, numClasses] = outputTensor.dims;
-        const logitsData = outputTensor.data as Float32Array;
-        
-        // 7. Decode using CTC greedy decoder
-        const decodedWord = decodeCTC(logitsData, timeSteps, numClasses);
-        console.log(`[OCR] Word ${i + 1} raw decoded: "${decodedWord}"`);
-        
-        if (decodedWord.trim()) {
-          decodedWords.push(decodedWord.trim());
-        }
+        candidates.push({
+          wordL: wordL.trim(),
+          wordS: wordS.trim()
+        });
       }
 
-      // 8. Join decoded segments
-      const decodedText = decodedWords.join(' ');
-      console.log(`[OCR] Full Line Decoded: "${decodedText}"`);
-
-      // 9. Post-process to translate digits and normalize suffixes
-      const postProcessedText = postProcessOcrText(decodedText);
-      console.log(`[OCR] Post-Processed OCR: "${postProcessedText}"`);
-
-      return {
-        text: postProcessedText,
-        confidence: 0.95
-      };
+      return { candidates };
     } catch (err) {
       console.error('OCR inference failed:', err);
       throw err;

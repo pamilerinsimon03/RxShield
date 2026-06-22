@@ -37,7 +37,7 @@ export class OcrService {
     rgbaBuffer: Uint8ClampedArray,
     width: number,
     height: number
-  ): Promise<{ text: string; confidence: number }> {
+  ): Promise<{ candidates: { wordL: string; wordS: string }[] }> {
     if (!this.api) {
       this.initializeWorker();
     }

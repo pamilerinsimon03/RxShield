@@ -3,6 +3,8 @@ import { RxShieldWorkerClient } from '@/services/rxShieldWorkerClient';
 import { WorkerResponse } from '@/services/workerInterface';
 import { OcrService } from '@/services/ocrService';
 import { useDatabase } from '@/context/DatabaseContext';
+import { translateToNumericDose, normalizeFrequency, hasDosagePattern } from '@/utils/dosageUtils';
+import { getFuzzySimilarity } from '@/utils/stringDistance';
 
 export type WorkflowPhase = 'IDLE' | 'EXTRACTION' | 'VALIDATION' | 'COMPLETE';
 
@@ -38,7 +40,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
 
-  const { matchDrug } = useDatabase();
+  const { matchDrug, matchDrugNameOnly, selectBestOcrCandidate } = useDatabase();
   const workerClientRef = useRef<RxShieldWorkerClient | null>(null);
   const ocrServiceRef = useRef<OcrService | null>(null);
 
@@ -132,39 +134,98 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
       setLogs((prev) => [...prev, '[App] Initializing ONNX Character Recognition...']);
       await ocrServiceRef.current.init();
 
-      setLogs((prev) => [...prev, '[App] Running OCR neural network pass...']);
+      setLogs((prev) => [...prev, '[App] Running Dual-Pass OCR neural network...']);
       const ocrResult = await ocrServiceRef.current.runOcr(rgbaBuffer, width, height);
-      const text = ocrResult.text || '';
       
-      setLogs((prev) => [...prev, `[App] Character extraction complete: "${text}"`]);
+      const { candidates } = ocrResult;
+      setLogs((prev) => [...prev, `[App] Character extraction complete. Processing ${candidates.length} segments...`]);
 
-      const tokens = text.split(/\s+/).filter(Boolean);
-      setExtractedTokens(tokens.length > 0 ? tokens : ['[Empty text]']);
-
-      // Step 2: VALIDATION
+      // Step 2: VALIDATION & SELECTION
       setPhase('VALIDATION');
-      setLogs((prev) => [...prev, `[App] Querying SQLite with matched candidates for "${text}"...`]);
 
-      const match = await matchDrug(text);
+      // Pre-evaluate drug
+      let preMatchedGeneric: string | null = null;
+      for (const cand of candidates) {
+        const resL = await matchDrugNameOnly(cand.wordL);
+        if (resL.matched) {
+          preMatchedGeneric = resL.name;
+          break;
+        }
+        const resS = await matchDrugNameOnly(cand.wordS);
+        if (resS.matched) {
+          preMatchedGeneric = resS.name;
+          break;
+        }
+      }
 
-      // Delay 500ms for UX transition showing raw tokens before auto-correcting them
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      const selectedWords: string[] = [];
+      for (const cand of candidates) {
+        const selected = await selectBestOcrCandidate(cand.wordL, cand.wordS, preMatchedGeneric);
+        if (selected) selectedWords.push(selected);
+      }
 
-      if (match.matched && match.matchedString && tokens.length > 0) {
-        const correctedTokens = [...tokens];
-        correctedTokens[0] = match.matchedString;
-        setExtractedTokens(correctedTokens);
+      const rawDecoded = selectedWords.join(' ');
+      setLogs((prev) => [...prev, `[App] Raw Decoded: "${rawDecoded}"`]);
+
+      // Post-process tokens (joining suffixes, translating doses)
+      const postProcessedWords: string[] = [];
+      for (let i = 0; i < selectedWords.length; i++) {
+        let token = selectedWords[i];
+
+        // Handle suffix joining if applicable
+        // (Simplified for now, test script has more complex joining)
+
+        const normFreq = normalizeFrequency(token);
+        if (normFreq !== token) {
+          postProcessedWords.push(normFreq);
+          continue;
+        }
+
+        if (hasDosagePattern(token)) {
+          const { value, snapped, suffix } = translateToNumericDose(token, preMatchedGeneric);
+          if (snapped && value !== null) {
+            const resolvedSuffix = suffix.toLowerCase().includes('l') ? 'ml' : 'mg';
+            postProcessedWords.push(value.toString() + resolvedSuffix);
+            continue;
+          }
+        }
+        postProcessedWords.push(token);
+      }
+
+      const postProcessedText = postProcessedWords.join(' ');
+      setLogs((prev) => [...prev, `[App] Post-Processed: "${postProcessedText}"`]);
+      setExtractedTokens(postProcessedWords);
+
+      const match = await matchDrug(postProcessedText);
+
+      // Auto-correct tokens
+      if (match.matched && match.matchedString && postProcessedWords.length > 0) {
+        const corrected = [...postProcessedWords];
+        for (let i = 0; i < corrected.length; i++) {
+          const m = await matchDrugNameOnly(corrected[i]);
+          if (m.matched) {
+            corrected[i] = match.matchedString;
+            break;
+          }
+        }
+        setExtractedTokens(corrected);
+        setLogs((prev) => [...prev, `[App] DB Verified: "${corrected.join(' ')}"`]);
       }
 
       // Step 3: COMPLETE (safety rule evaluation)
-      let verdict = 'PASS';
+      let verdict: 'PASS' | 'WARNING' | 'DANGER' = 'PASS';
       let message = 'Dosage Matches NSTG Guidelines. No Known Interactions.';
-      let citation = 'NSTG Section 3.1, Page 45'; // default fallback
+      let citation = 'NSTG Section 3.1, Page 45';
       
-      const textLower = text.toLowerCase();
+      const finalProcessedText = match.matched ? postProcessedWords.join(' ') : postProcessedText;
+      const textLower = finalProcessedText.toLowerCase();
+      const words = textLower.split(/\s+/);
 
-      // Check toxic interactions first
-      if (textLower.includes('simvastatin') && textLower.includes('clarithromycin')) {
+      // Toxic interactions
+      const hasSimvastatin = words.some(w => getFuzzySimilarity(w, 'simvastatin') >= 0.70);
+      const hasClarithromycin = words.some(w => getFuzzySimilarity(w, 'clarithromycin') >= 0.70);
+
+      if (hasSimvastatin && hasClarithromycin) {
         verdict = 'DANGER';
         message = 'Lethal drug interaction: Clarithromycin co-administration contraindicated with Simvastatin due to severe risk of rhabdomyolysis.';
         citation = 'NSTG Chapter 7, Page 143';
@@ -180,7 +241,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
         message = match.error || `Medication not recognized in database. Manual clinical check required.`;
         citation = 'NSTG Section 1.2 (Unrecognized Compounds)';
         setValidationData({
-          genericName: text,
+          genericName: finalProcessedText,
           requiresPregnancyCheck: 0,
           requiresRenalCheck: 0
         });
@@ -188,30 +249,18 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
         const d = match.data;
         citation = d.guideline_citation || citation;
         
-        // Parse daily dose and check limits
-        let doseMg = d.max_single_dose_mg || 0; // fallback
+        let doseMg = d.max_single_dose_mg || 0;
         let matches = textLower.match(/(\d+(?:\.\d+)?)\s*mg/);
-        if (!matches) {
-          // Fallback: match any number sequence if "mg" is omitted or misread
-          matches = textLower.match(/(\d+(?:\.\d+)?)/);
-        }
-        if (matches && matches[1]) {
-          doseMg = parseFloat(matches[1]);
-        }
+        if (!matches) matches = textLower.match(/(\d+(?:\.\d+)?)/);
+        if (matches && matches[1]) doseMg = parseFloat(matches[1]);
 
-        // Determine frequency
         let frequency = 1;
-        if (textLower.includes('bd') || textLower.includes('bid') || textLower.includes('twice')) {
-          frequency = 2;
-        } else if (textLower.includes('tds') || textLower.includes('tid') || textLower.includes('three')) {
-          frequency = 3;
-        } else if (textLower.includes('qds') || textLower.includes('qid') || textLower.includes('four')) {
-          frequency = 4;
-        }
+        if (textLower.includes('bd') || textLower.includes('bid') || textLower.includes('twice')) frequency = 2;
+        else if (textLower.includes('tds') || textLower.includes('tid') || textLower.includes('three')) frequency = 3;
+        else if (textLower.includes('qds') || textLower.includes('qid') || textLower.includes('four')) frequency = 4;
 
         const calculatedDailyDose = doseMg * frequency;
         
-        // Populate normalized validation data
         const valData = {
           genericName: d.generic_name,
           requiresPregnancyCheck: d.requires_pregnancy_check,
@@ -231,11 +280,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
       setPhase('COMPLETE');
-      setFinalVerdict({
-        verdict,
-        message,
-        citation
-      });
+      setFinalVerdict({ verdict, message, citation });
       setIsProcessing(false);
 
     } catch (err) {

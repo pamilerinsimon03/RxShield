@@ -7,6 +7,8 @@ interface DatabaseContextType {
   dbError: string | null;
   query: (sql: string, params?: Array<string | number>) => Promise<any[]>;
   matchDrug: (text: string) => Promise<any>;
+  matchDrugNameOnly: (text: string) => Promise<any>;
+  selectBestOcrCandidate: (wordL: string, wordS: string, previousMatchedGeneric: string | null) => Promise<string>;
   logOverride: (genericName: string, signatureLock: string, overriddenChecks: string) => Promise<boolean>;
 }
 
@@ -97,6 +99,20 @@ export const DatabaseProvider = ({ children }: { children: React.ReactNode }): J
     return apiRef.current.matchDrugAndJoinProtocol(text);
   };
 
+  const matchDrugNameOnly = async (text: string): Promise<any> => {
+    if (!apiRef.current) {
+      throw new Error('Database is not initialized.');
+    }
+    return apiRef.current.matchDrugNameOnly(text);
+  };
+
+  const selectBestOcrCandidate = async (wordL: string, wordS: string, previousMatchedGeneric: string | null): Promise<string> => {
+    if (!apiRef.current) {
+      throw new Error('Database is not initialized.');
+    }
+    return apiRef.current.selectBestOcrCandidate(wordL, wordS, previousMatchedGeneric);
+  };
+
   const logOverride = async (genericName: string, signatureLock: string, overriddenChecks: string): Promise<boolean> => {
     if (!apiRef.current) {
       throw new Error('Database is not initialized.');
@@ -105,7 +121,7 @@ export const DatabaseProvider = ({ children }: { children: React.ReactNode }): J
   };
 
   return (
-    <DatabaseContext.Provider value={{ isDbReady, dbError, query, matchDrug, logOverride }}>
+    <DatabaseContext.Provider value={{ isDbReady, dbError, query, matchDrug, matchDrugNameOnly, selectBestOcrCandidate, logOverride }}>
       {children}
     </DatabaseContext.Provider>
   );
