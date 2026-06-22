@@ -1,4 +1,5 @@
-const CACHE_NAME = 'rxshield-cache-v1';
+const CACHE_NAME = 'rxshield-cache-v2';
+
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
@@ -14,7 +15,14 @@ const PRECACHE_ASSETS = [
   '/wasm/ort-wasm-simd-threaded.jspi.mjs'
 ];
 
-// Install Event - Pre-cache critical core shell assets
+// Paths that should use Cache-First strategy to preserve offline loading and save bandwidth
+const CACHE_FIRST_PATHS = [
+  '/models/',
+  '/database/',
+  '/wasm/'
+];
+
+// Install Event
 self.addEventListener('install', (event) => {
   self.skipWaiting();
   event.waitUntil(
@@ -27,7 +35,7 @@ self.addEventListener('install', (event) => {
   );
 });
 
-// Activate Event - Claim clients and purge old caches
+// Activate Event - Purge old caches immediately
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((cacheNames) => {
@@ -43,48 +51,71 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Fetch Event - Strict Cache-First Strategy with Network Fallback
+// Fetch Event - Hybrid Caching Strategy
 self.addEventListener('fetch', (event) => {
-  // Only handle GET requests
   if (event.request.method !== 'GET') return;
 
   const url = new URL(event.request.url);
 
-  // Avoid intercepting NextJS hot-reloading dev server events or Chrome extensions
-  if (url.pathname.includes('/_next/webpack-hmr') || url.protocol !== 'http:' && url.protocol !== 'https:') {
+  // Avoid intercepting dev HMR or Chrome extensions
+  if (url.pathname.includes('/_next/webpack-hmr') || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
     return;
   }
 
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        console.log(`[Service Worker] Cache Hit: ${url.pathname}`);
-        return cachedResponse;
-      }
+  // Check if this path should use Cache-First
+  const useCacheFirst = CACHE_FIRST_PATHS.some(path => url.pathname.includes(path)) || 
+                        url.pathname.endsWith('.wasm') || 
+                        url.pathname.endsWith('.onnx') || 
+                        url.pathname.endsWith('.db');
 
-      console.log(`[Service Worker] Cache Miss: ${url.pathname} - Fetching from network...`);
-      return fetch(event.request).then((networkResponse) => {
-        // Check if response is valid before caching
-        if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic' && networkResponse.type !== 'cors') {
+  if (useCacheFirst) {
+    // 1. Cache-First Strategy for Large Binary Files (Models, DB, Wasm)
+    event.respondWith(
+      caches.match(event.request).then((cachedResponse) => {
+        if (cachedResponse) {
+          return cachedResponse;
+        }
+        return fetch(event.request).then((networkResponse) => {
+          if (!networkResponse || networkResponse.status !== 200) {
+            return networkResponse;
+          }
+          const responseToCache = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseToCache);
+          });
+          return networkResponse;
+        }).catch((err) => {
+          console.error(`[Service Worker] Cache-first fetch failed for: ${url.pathname}`, err);
+          return new Response('Offline and asset not cached.', { status: 503 });
+        });
+      })
+    );
+  } else {
+    // 2. Network-First Strategy for HTML, JS, CSS, and general application assets
+    event.respondWith(
+      fetch(event.request).then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200) {
+          const responseToCache = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseToCache);
+          });
           return networkResponse;
         }
-
-        // Cache the dynamically fetched resource
-        const responseToCache = networkResponse.clone();
-        caches.open(CACHE_NAME).then((cache) => {
-          cache.put(event.request, responseToCache);
-        });
-
         return networkResponse;
-      }).catch((err) => {
-        console.error(`[Service Worker] Fetch failed for: ${url.pathname}`, err);
-        
-        // Return 404 page fallback if we are offline and page/file is not cached
+      }).catch(async () => {
+        // Network failed (offline), check cache
+        const cachedResponse = await caches.match(event.request);
+        if (cachedResponse) {
+          return cachedResponse;
+        }
+        // If not in cache and requesting HTML page, return 404 fallback
         const acceptHeader = event.request.headers.get('accept');
         if (acceptHeader && acceptHeader.includes('text/html')) {
-          return caches.match('/404.html');
+          const fallback = await caches.match('/404.html');
+          if (fallback) return fallback;
         }
-      });
-    })
-  );
+        return new Response('Network request failed and no cached version is available.', { status: 504 });
+      })
+    );
+  }
 });
