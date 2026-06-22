@@ -60,12 +60,15 @@ export const CameraViewfinder: React.FC = () => {
     stopStream();
     setIsCaptured(true);
 
-    // 3. Apply high-contrast binarization filter
-    const binarized = binarizeImageData(rawCrop);
+    // 3. Clone the raw pixel buffer for the background worker track
+    const rawDataForWorker = new Uint8ClampedArray(rawCrop.data);
+
+    // 4. Apply high-speed static threshold binarization for UI preview only (prevents UI freeze)
+    const binarized = binarizeImageData(rawCrop, 128);
     setBinarizedCrop(binarized);
 
-    // 4. Send binarized pixel buffer to Web Worker OCR
-    runInference(binarized.data, binarized.width, binarized.height);
+    // 5. Send raw pixel buffer to hybrid OCR parser
+    runInference(rawDataForWorker, binarized.width, binarized.height);
   };
 
   const handleRetake = () => {

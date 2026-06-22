@@ -52,6 +52,19 @@ export class OcrService {
     );
   }
 
+  public async setDrugDb(
+    allDrugNames: string[],
+    drugToGenericMap: Record<string, string>,
+    protocolGenerics: string[]
+  ): Promise<void> {
+    if (!this.api) {
+      this.initializeWorker();
+    }
+    if (this.api) {
+      await this.api.setDrugDb(allDrugNames, drugToGenericMap, protocolGenerics);
+    }
+  }
+
   public terminate(): void {
     if (this.worker) {
       this.worker.terminate();

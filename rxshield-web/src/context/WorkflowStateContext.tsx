@@ -3,6 +3,8 @@ import { RxShieldWorkerClient } from '@/services/rxShieldWorkerClient';
 import { WorkerResponse } from '@/services/workerInterface';
 import { OcrService } from '@/services/ocrService';
 import { useDatabase } from '@/context/DatabaseContext';
+import { getFuzzySimilarity } from '@/utils/stringDistance';
+import { useHybridPrescriptionParser } from '@/components/Camera/useHybridPrescriptionParser';
 
 export type WorkflowPhase = 'IDLE' | 'EXTRACTION' | 'VALIDATION' | 'COMPLETE';
 
@@ -38,9 +40,56 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
 
-  const { matchDrug } = useDatabase();
+  const { matchDrug, isDbReady, query } = useDatabase();
   const workerClientRef = useRef<RxShieldWorkerClient | null>(null);
   const ocrServiceRef = useRef<OcrService | null>(null);
+
+  const { parsePrescription } = useHybridPrescriptionParser({
+    ocrServiceRef,
+    appendLog: (log: string) => setLogs((prev) => [...prev, log]),
+  });
+
+  useEffect(() => {
+    const ocrService = ocrServiceRef.current;
+    if (isDbReady && ocrService) {
+      const loadDrugs = async () => {
+        try {
+          const candidates = await query('SELECT DISTINCT brand_name, generic_name FROM drugs');
+          const protocols = await query('SELECT DISTINCT generic_name FROM nstg_protocols');
+          
+          const drugToGenericMap: Record<string, string> = {};
+          const unique = new Set<string>();
+          
+          for (const row of candidates) {
+            const brand = row.brand_name ? row.brand_name.toUpperCase() : null;
+            const generic = row.generic_name ? row.generic_name.toUpperCase() : null;
+            if (brand) {
+              unique.add(brand);
+              if (generic) drugToGenericMap[brand] = generic;
+            }
+            if (generic) {
+              unique.add(generic);
+              drugToGenericMap[generic] = generic;
+            }
+          }
+          
+          const protocolGenerics = protocols
+            .map(row => row.generic_name ? row.generic_name.toUpperCase() : null)
+            .filter(Boolean) as string[];
+            
+          await ocrService.setDrugDb(
+            Array.from(unique),
+            drugToGenericMap,
+            protocolGenerics
+          );
+          console.log('[WorkflowStateContext] Caching drug names in vision worker.');
+        } catch (err) {
+          console.error('[WorkflowStateContext] Failed to cache drugs in vision worker:', err);
+        }
+      };
+      loadDrugs();
+    }
+  }, [isDbReady, query]);
 
 
   useEffect(() => {
@@ -121,7 +170,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
     resetWorkflow();
     setIsProcessing(true);
     setErrorMsg(null);
-    setLogs((prev) => [...prev, `[App] Starting local OCR model on frame ${width}x${height}...`]);
+    setLogs((prev) => [...prev, `[App] Starting hybrid OCR parser on frame ${width}x${height}...`]);
     setPhase('EXTRACTION');
 
     try {
@@ -129,14 +178,13 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
         ocrServiceRef.current = new OcrService();
       }
 
-      setLogs((prev) => [...prev, '[App] Initializing ONNX Character Recognition...']);
-      await ocrServiceRef.current.init();
-
-      setLogs((prev) => [...prev, '[App] Running OCR neural network pass...']);
-      const ocrResult = await ocrServiceRef.current.runOcr(rgbaBuffer, width, height);
-      const text = ocrResult.text || '';
+      const parseResult = await parsePrescription(rgbaBuffer, width, height);
+      const text = parseResult.text || '';
       
-      setLogs((prev) => [...prev, `[App] Character extraction complete: "${text}"`]);
+      setLogs((prev) => [
+        ...prev,
+        `[App] Character extraction complete (Source: ${parseResult.source.toUpperCase()}): "${text}"`
+      ]);
 
       const tokens = text.split(/\s+/).filter(Boolean);
       setExtractedTokens(tokens.length > 0 ? tokens : ['[Empty text]']);
@@ -152,7 +200,18 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (match.matched && match.matchedString && tokens.length > 0) {
         const correctedTokens = [...tokens];
-        correctedTokens[0] = match.matchedString;
+        let replaced = false;
+        for (let i = 0; i < correctedTokens.length; i++) {
+          const score = getFuzzySimilarity(correctedTokens[i], match.matchedString);
+          if (score >= 0.60) {
+            correctedTokens[i] = match.matchedString;
+            replaced = true;
+            break;
+          }
+        }
+        if (!replaced) {
+          correctedTokens[0] = match.matchedString;
+        }
         setExtractedTokens(correctedTokens);
       }
 
@@ -162,9 +221,12 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
       let citation = 'NSTG Section 3.1, Page 45'; // default fallback
       
       const textLower = text.toLowerCase();
+      const words = textLower.split(/\s+/);
+      const hasSimvastatin = words.some(w => getFuzzySimilarity(w, 'simvastatin') >= 0.70);
+      const hasClarithromycin = words.some(w => getFuzzySimilarity(w, 'clarithromycin') >= 0.70);
 
       // Check toxic interactions first
-      if (textLower.includes('simvastatin') && textLower.includes('clarithromycin')) {
+      if (hasSimvastatin && hasClarithromycin) {
         verdict = 'DANGER';
         message = 'Lethal drug interaction: Clarithromycin co-administration contraindicated with Simvastatin due to severe risk of rhabdomyolysis.';
         citation = 'NSTG Chapter 7, Page 143';
@@ -192,26 +254,28 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
         let doseMg = d.max_single_dose_mg || 0; // fallback
         let matches = textLower.match(/(\d+(?:\.\d+)?)\s*mg/);
         if (!matches) {
-          // Fallback: match any number sequence if "mg" is omitted or misread
           matches = textLower.match(/(\d+(?:\.\d+)?)/);
         }
         if (matches && matches[1]) {
           doseMg = parseFloat(matches[1]);
         }
 
-        // Determine frequency
+        // Determine frequency using the robust visual equivalence mapping
         let frequency = 1;
-        if (textLower.includes('bd') || textLower.includes('bid') || textLower.includes('twice')) {
+        const hasBD = words.some(w => ['bd', 'bid', 'twice', 'bl', 'b1', 'bo', 'bd5', 'rfy', '8l'].includes(w));
+        const hasTDS = words.some(w => ['tds', 'tid', 'three', 'td5', 't18', 'tds5', 'td', 'tles'].includes(w));
+        const hasQDS = words.some(w => ['qds', 'qid', 'four', 'qd5'].includes(w));
+        
+        if (hasBD) {
           frequency = 2;
-        } else if (textLower.includes('tds') || textLower.includes('tid') || textLower.includes('three')) {
+        } else if (hasTDS) {
           frequency = 3;
-        } else if (textLower.includes('qds') || textLower.includes('qid') || textLower.includes('four')) {
+        } else if (hasQDS) {
           frequency = 4;
         }
 
         const calculatedDailyDose = doseMg * frequency;
         
-        // Populate normalized validation data
         const valData = {
           genericName: d.generic_name,
           requiresPregnancyCheck: d.requires_pregnancy_check,

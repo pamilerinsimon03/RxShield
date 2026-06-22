@@ -12,6 +12,220 @@ const DB_PATH = path.resolve(__dirname, '../public/database/rxshield_core.db');
 const PYTHON_PATH = path.resolve(__dirname, '../../rxshield-pipeline/.venv/Scripts/python.exe');
 const BRIDGE_PATH = path.resolve(__dirname, 'query_db_bridge.py');
 
+// Load environment variables from .env.local if present
+const envPath = path.resolve(__dirname, '../.env.local');
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, 'utf-8');
+  for (let line of envContent.split(/\r?\n/)) {
+    line = line.trim();
+    if (!line || line.startsWith('#')) continue;
+    const parts = line.split('=');
+    if (parts.length >= 2) {
+      const key = parts[0].trim();
+      const val = parts.slice(1).join('=').trim();
+      if (key.startsWith('NEXT_PUBLIC_')) {
+        process.env[key] = val;
+      }
+    }
+  }
+}
+
+async function checkOnlineStatus() {
+  if (process.env.NEXT_PUBLIC_GEMINI_API_KEY) {
+    try {
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), 5000);
+      await fetch('https://generativelanguage.googleapis.com', {
+        method: 'HEAD',
+        signal: controller.signal
+      });
+      clearTimeout(id);
+      return true;
+    } catch (e) {
+      console.warn('[Online Check Debug] Connection probe failed:', e.message || e);
+      return false;
+    }
+  }
+  console.warn('[Online Check Debug] process.env.NEXT_PUBLIC_GEMINI_API_KEY is not defined!');
+  return false;
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(id);
+    return response;
+  } catch (error) {
+    clearTimeout(id);
+    throw error;
+  }
+}
+
+async function runCloudTrack(imagePath) {
+  const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('NEXT_PUBLIC_GEMINI_API_KEY is not configured.');
+  }
+
+  const base64Image = fs.readFileSync(imagePath, { encoding: 'base64' });
+
+  const prompt = `Analyze this cropped handwritten image from a medical prescription.
+Extract the medication details.
+Return a JSON object with the following fields:
+- medication: the brand name or generic name (e.g. "Amoxil", "Lasix", "Lipitor", "Methotrexate")
+- dosage: the dosage (e.g. "2gm", "250mg", "10", "7.5mg")
+- frequency: the frequency or instructions (e.g. "Daily", "TDS", "BD")
+Do not hallucinate or add any other text. Output strictly valid JSON matching this schema.`;
+
+  const requestBody = {
+    contents: [
+      {
+        parts: [
+          { text: prompt },
+          {
+            inlineData: {
+              mimeType: 'image/jpeg',
+              data: base64Image,
+            },
+          },
+        ],
+      },
+    ],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: 'OBJECT',
+        properties: {
+          medication: { type: 'STRING' },
+          dosage: { type: 'STRING' },
+          frequency: { type: 'STRING' },
+        },
+        required: ['medication', 'dosage', 'frequency'],
+      },
+    },
+  };
+
+  const isNegativeOrEmpty = (val) => {
+    if (!val) return true;
+    const normalized = val.toString().trim().toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "");
+    const negativeWords = [
+      'none', 'na', 'n/a', 'not specified', 'unknown',
+      'none mentioned', 'not mentioned', 'unspecified',
+      'null', 'nil'
+    ];
+    return negativeWords.includes(normalized);
+  };
+
+  const runGeminiRequest = async (model, timeoutMs) => {
+    console.log(`[Cloud Track] Dispatching fetch to Gemini (${model})...`);
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const response = await fetchWithTimeout(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+    }, timeoutMs);
+
+    if (!response.ok) {
+      throw new Error(`Gemini API response failure (${model}): ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!jsonText) {
+      throw new Error(`Empty payload returned from Gemini (${model}).`);
+    }
+
+    const parsed = JSON.parse(jsonText.trim());
+    const tokens = [parsed.medication, parsed.dosage, parsed.frequency]
+      .filter(val => !isNegativeOrEmpty(val))
+      .join(' ');
+    
+    console.log(`[Cloud Track] Gemini (${model}) returned: "${tokens}"`);
+    return tokens;
+  };
+
+  const runGroqRequest = async (groqKey, timeoutMs) => {
+    console.log('[Cloud Track] Dispatching fetch to Groq (qwen/qwen3.6-27b)...');
+    const url = 'https://api.groq.com/openai/v1/chat/completions';
+    const groqBody = {
+      model: 'qwen/qwen3.6-27b',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: prompt,
+            },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:image/jpeg;base64,${base64Image}`
+              }
+            }
+          ]
+        }
+      ],
+      response_format: {
+        type: 'json_object'
+      }
+    };
+
+    const response = await fetchWithTimeout(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${groqKey}`,
+      },
+      body: JSON.stringify(groqBody),
+    }, timeoutMs);
+
+    if (!response.ok) {
+      throw new Error(`Groq API response failure: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    const jsonText = data.choices?.[0]?.message?.content;
+    if (!jsonText) {
+      throw new Error('Empty payload returned from Groq.');
+    }
+
+    const parsed = JSON.parse(jsonText.trim());
+    const tokens = [parsed.medication, parsed.dosage, parsed.frequency]
+      .filter(val => !isNegativeOrEmpty(val))
+      .join(' ');
+    
+    console.log(`[Cloud Track] Groq returned: "${tokens}"`);
+    return tokens;
+  };
+
+  // Try primary model (gemini-2.5-flash) first
+  try {
+    return await runGeminiRequest('gemini-2.5-flash', 25000);
+  } catch (err) {
+    console.warn(`[Cloud Track] Primary gemini-2.5-flash failed/timed out: ${err.message || err}.`);
+  }
+
+  // Try Groq if key is present
+  const groqApiKey = process.env.NEXT_PUBLIC_GROQ_API_KEY;
+  if (groqApiKey) {
+    try {
+      return await runGroqRequest(groqApiKey, 20000);
+    } catch (err) {
+      console.warn(`[Cloud Track] Groq failed/timed out: ${err.message || err}.`);
+    }
+  }
+
+  throw new Error('All cloud models and API fallbacks failed.');
+}
+
 // CRNN vocabulary
 const CHARS = [
   "", " ", "!", "\"", "'", "(", ")", ",", "-", ".", "0", "1", "2", "3", "4", "5", "6", 
@@ -1196,64 +1410,142 @@ async function main() {
       const wordBoxes = segmentLineIntoWords(width, height, binarizedBuffer, globalBbox, 1);
       console.log(`[Segmentation] Split line into ${wordBoxes.length} word box(es)`);
 
-      // Pre-evaluate matched drug by running a quick drug search on letterbox and stretched outputs
-      let preMatchedGeneric = null;
-      for (const box of wordBoxes) {
-        const subBuffer = extractSubImage(width, binarizedBuffer, box);
-        
-        const floatL = preprocessLetterbox(box.w, box.h, subBuffer, 512, 128);
-        const tensorL = new ort.Tensor('float32', floatL, [1, 1, 128, 512]);
-        const outputsL = await session.run({ input_images: tensorL });
-        const wordL = decodeCTC(outputsL.output_logits.data, outputsL.output_logits.dims[1], outputsL.output_logits.dims[2]).replace(/\s+/g, '');
-        
-        const matchRes = matchDrugNameOnly(wordL);
-        if (matchRes.matched) {
-          preMatchedGeneric = matchRes.name;
-          break;
+      // Check network connectivity
+      const isOnline = await checkOnlineStatus();
+      console.log(`[Orchestrator] Network Status: ${isOnline ? 'ONLINE' : 'OFFLINE'}`);
+
+      let postProcessed = '';
+      let source = 'local';
+      let rawDecoded = '';
+
+      if (isOnline) {
+        console.log(`[Orchestrator] Online Mode. Initiating parallel race...`);
+        // Start local OCR runner (representing local track)
+        const localTrackPromise = (async () => {
+          let preMatchedGeneric = null;
+          for (const box of wordBoxes) {
+            const subBuffer = extractSubImage(width, binarizedBuffer, box);
+            
+            const floatL = preprocessLetterbox(box.w, box.h, subBuffer, 512, 128);
+            const tensorL = new ort.Tensor('float32', floatL, [1, 1, 128, 512]);
+            const outputsL = await session.run({ input_images: tensorL });
+            const wordL = decodeCTC(outputsL.output_logits.data, outputsL.output_logits.dims[1], outputsL.output_logits.dims[2]).replace(/\s+/g, '');
+            
+            const matchRes = matchDrugNameOnly(wordL);
+            if (matchRes.matched) {
+              preMatchedGeneric = matchRes.name;
+              break;
+            }
+            
+            const floatS = preprocessStretched(box.w, box.h, subBuffer, 512, 128);
+            const tensorS = new ort.Tensor('float32', floatS, [1, 1, 128, 512]);
+            const outputsS = await session.run({ input_images: tensorS });
+            const wordS = decodeCTC(outputsS.output_logits.data, outputsS.output_logits.dims[1], outputsS.output_logits.dims[2]).replace(/\s+/g, '');
+            
+            const matchResS = matchDrugNameOnly(wordS);
+            if (matchResS.matched) {
+              preMatchedGeneric = matchResS.name;
+              break;
+            }
+          }
+
+          const decodedWords = [];
+          for (let wIdx = 0; wIdx < wordBoxes.length; wIdx++) {
+            const box = wordBoxes[wIdx];
+            const subBuffer = extractSubImage(width, binarizedBuffer, box);
+
+            const floatL = preprocessLetterbox(box.w, box.h, subBuffer, 512, 128);
+            const tensorL = new ort.Tensor('float32', floatL, [1, 1, 128, 512]);
+            const outputsL = await session.run({ input_images: tensorL });
+            const wordL = decodeCTC(outputsL.output_logits.data, outputsL.output_logits.dims[1], outputsL.output_logits.dims[2]);
+
+            const floatS = preprocessStretched(box.w, box.h, subBuffer, 512, 128);
+            const tensorS = new ort.Tensor('float32', floatS, [1, 1, 128, 512]);
+            const outputsS = await session.run({ input_images: tensorS });
+            const wordS = decodeCTC(outputsS.output_logits.data, outputsS.output_logits.dims[1], outputsS.output_logits.dims[2]);
+
+            const selectedWord = await selectBestOcrCandidate(wordL, wordS, preMatchedGeneric);
+            if (selectedWord.trim()) {
+              decodedWords.push(selectedWord.trim());
+            }
+          }
+          rawDecoded = decodedWords.join(' ');
+          return postProcessOcrText(rawDecoded, preMatchedGeneric);
+        })();
+
+        try {
+          postProcessed = await Promise.race([
+            runCloudTrack(imagePath),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('Cloud API request timed out (60000ms limit reached).')), 60000)
+            )
+          ]);
+          source = 'cloud';
+          rawDecoded = postProcessed;
+          console.log(`[Orchestrator] Cloud VLM won the race.`);
+        } catch (err) {
+          console.warn(`[Orchestrator] Cloud Track failed/timed out: ${err.message || err}`);
+          console.log('[Orchestrator] Falling back immediately to Local WASM result.');
+          postProcessed = await localTrackPromise;
+          source = 'local';
         }
+      } else {
+        console.log('[Orchestrator] Offline Mode active. Executing local track only.');
         
-        const floatS = preprocessStretched(box.w, box.h, subBuffer, 512, 128);
-        const tensorS = new ort.Tensor('float32', floatS, [1, 1, 128, 512]);
-        const outputsS = await session.run({ input_images: tensorS });
-        const wordS = decodeCTC(outputsS.output_logits.data, outputsS.output_logits.dims[1], outputsS.output_logits.dims[2]).replace(/\s+/g, '');
-        
-        const matchResS = matchDrugNameOnly(wordS);
-        if (matchResS.matched) {
-          preMatchedGeneric = matchResS.name;
-          break;
+        let preMatchedGeneric = null;
+        for (const box of wordBoxes) {
+          const subBuffer = extractSubImage(width, binarizedBuffer, box);
+          
+          const floatL = preprocessLetterbox(box.w, box.h, subBuffer, 512, 128);
+          const tensorL = new ort.Tensor('float32', floatL, [1, 1, 128, 512]);
+          const outputsL = await session.run({ input_images: tensorL });
+          const wordL = decodeCTC(outputsL.output_logits.data, outputsL.output_logits.dims[1], outputsL.output_logits.dims[2]).replace(/\s+/g, '');
+          
+          const matchRes = matchDrugNameOnly(wordL);
+          if (matchRes.matched) {
+            preMatchedGeneric = matchRes.name;
+            break;
+          }
+          
+          const floatS = preprocessStretched(box.w, box.h, subBuffer, 512, 128);
+          const tensorS = new ort.Tensor('float32', floatS, [1, 1, 128, 512]);
+          const outputsS = await session.run({ input_images: tensorS });
+          const wordS = decodeCTC(outputsS.output_logits.data, outputsS.output_logits.dims[1], outputsS.output_logits.dims[2]).replace(/\s+/g, '');
+          
+          const matchResS = matchDrugNameOnly(wordS);
+          if (matchResS.matched) {
+            preMatchedGeneric = matchResS.name;
+            break;
+          }
         }
+
+        const decodedWords = [];
+        for (let wIdx = 0; wIdx < wordBoxes.length; wIdx++) {
+          const box = wordBoxes[wIdx];
+          const subBuffer = extractSubImage(width, binarizedBuffer, box);
+
+          const floatL = preprocessLetterbox(box.w, box.h, subBuffer, 512, 128);
+          const tensorL = new ort.Tensor('float32', floatL, [1, 1, 128, 512]);
+          const outputsL = await session.run({ input_images: tensorL });
+          const wordL = decodeCTC(outputsL.output_logits.data, outputsL.output_logits.dims[1], outputsL.output_logits.dims[2]);
+
+          const floatS = preprocessStretched(box.w, box.h, subBuffer, 512, 128);
+          const tensorS = new ort.Tensor('float32', floatS, [1, 1, 128, 512]);
+          const outputsS = await session.run({ input_images: tensorS });
+          const wordS = decodeCTC(outputsS.output_logits.data, outputsS.output_logits.dims[1], outputsS.output_logits.dims[2]);
+
+          const selectedWord = await selectBestOcrCandidate(wordL, wordS, preMatchedGeneric);
+          if (selectedWord.trim()) {
+            console.log(`  Word ${wIdx + 1}: L = "${wordL.trim()}", S = "${wordS.trim()}" -> Selected = "${selectedWord.trim()}"`);
+            decodedWords.push(selectedWord.trim());
+          }
+        }
+        rawDecoded = decodedWords.join(' ');
+        postProcessed = postProcessOcrText(rawDecoded, preMatchedGeneric);
+        source = 'local';
       }
 
-      const decodedWords = [];
-
-      for (let wIdx = 0; wIdx < wordBoxes.length; wIdx++) {
-        const box = wordBoxes[wIdx];
-        const subBuffer = extractSubImage(width, binarizedBuffer, box);
-
-        // 1. Run Letterbox Preprocess + Inference
-        const floatL = preprocessLetterbox(box.w, box.h, subBuffer, 512, 128);
-        const tensorL = new ort.Tensor('float32', floatL, [1, 1, 128, 512]);
-        const outputsL = await session.run({ input_images: tensorL });
-        const wordL = decodeCTC(outputsL.output_logits.data, outputsL.output_logits.dims[1], outputsL.output_logits.dims[2]);
-
-        // 2. Run Stretched Preprocess + Inference
-        const floatS = preprocessStretched(box.w, box.h, subBuffer, 512, 128);
-        const tensorS = new ort.Tensor('float32', floatS, [1, 1, 128, 512]);
-        const outputsS = await session.run({ input_images: tensorS });
-        const wordS = decodeCTC(outputsS.output_logits.data, outputsS.output_logits.dims[1], outputsS.output_logits.dims[2]);
-
-        // 3. Selection
-        const selectedWord = await selectBestOcrCandidate(wordL, wordS, preMatchedGeneric);
-        if (selectedWord.trim()) {
-          console.log(`  Word ${wIdx + 1}: L = "${wordL.trim()}", S = "${wordS.trim()}" -> Selected = "${selectedWord.trim()}"`);
-          decodedWords.push(selectedWord.trim());
-        }
-      }
-
-      const rawDecoded = decodedWords.join(' ');
-      
-      // Post-process using visual translation combination expansion and frequency normalization
-      const postProcessed = postProcessOcrText(rawDecoded, preMatchedGeneric);
+      console.log(`[Source]:       "${source.toUpperCase()}"`);
       const matchResult = await matchDrug(postProcessed);
       
       // Auto-correct drug name token if drug matched
@@ -1310,6 +1602,12 @@ async function main() {
         verdictMsg: err.message || String(err),
         isSuccess: false
       });
+    }
+    
+    const isOnline = await checkOnlineStatus();
+    if (isOnline && idx < files.length - 1) {
+      console.log(`[Batch Test] Rate limit cooldown: sleeping 4.5s...`);
+      await new Promise(resolve => setTimeout(resolve, 4500));
     }
   }
 
