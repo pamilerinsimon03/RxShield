@@ -21,10 +21,10 @@ const checkOnlineStatus = async (appendLog: (log: string) => void): Promise<bool
   }
   try {
     const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), 3000);
-    // Use no-cors mode to perform a lightweight connectivity ping to the API host
-    await fetch('https://generativelanguage.googleapis.com', {
-      method: 'HEAD',
+    const id = setTimeout(() => controller.abort(), 2000);
+    // Use GET and no-cors mode to perform a lightweight connectivity ping to a standard endpoint
+    await fetch('https://www.google.com/generate_204', {
+      method: 'GET',
       mode: 'no-cors',
       signal: controller.signal,
       cache: 'no-store'
@@ -32,8 +32,11 @@ const checkOnlineStatus = async (appendLog: (log: string) => void): Promise<bool
     clearTimeout(id);
     return true;
   } catch (e) {
-    appendLog(`[Orchestrator] Reachability ping failed: ${e instanceof Error ? e.message : String(e)}`);
-    return false;
+    appendLog(`[Orchestrator] Reachability ping failed: ${e instanceof Error ? e.message : String(e)}. Falling back to navigator.onLine status.`);
+    // Critical fix: If the ping itself fails (e.g. blocked by DNS/adblocker/fetch policy),
+    // but navigator.onLine is true, we should STILL assume we are online and attempt the cloud track
+    // rather than forcing a local fallback.
+    return true;
   }
 };
 
