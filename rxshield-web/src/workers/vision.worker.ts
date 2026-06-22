@@ -201,6 +201,146 @@ const extractSubImage = (
 };
 
 /**
+ * Segments the global bounding box of ink horizontally into individual word bounding boxes.
+ * Utilizes a scale-invariant gap width and local vertical projections to isolate each word.
+ */
+const segmentLineIntoWords = (
+  rgbaBuffer: Uint8ClampedArray,
+  width: number,
+  height: number,
+  globalBbox: BoundingBox,
+  noiseThreshold: number = 1
+): BoundingBox[] => {
+  const { x: gx, y: gy, w: gw, h: gh } = globalBbox;
+  
+  // Calculate horizontal projections (ink pixel sum per column) ONLY within the vertical text zone
+  const colCounts = new Int32Array(width);
+  for (let x = gx; x < gx + gw; x++) {
+    for (let y = gy; y < gy + gh; y++) {
+      const idx = (y * width + x) * 4;
+      if (rgbaBuffer[idx] < 128) {
+        colCounts[x]++;
+      }
+    }
+  }
+
+  // Dynamic inter-word gap size based on the height of the line box (scale-invariant)
+  const gapWidth = Math.max(10, Math.round(gh * 0.18));
+  
+  const segments: { x1: number; x2: number }[] = [];
+  let inWord = false;
+  let wordStart = gx;
+  let consecutiveEmptyCols = 0;
+
+  for (let x = gx; x < gx + gw; x++) {
+    const hasInk = colCounts[x] > noiseThreshold;
+
+    if (hasInk) {
+      if (!inWord) {
+        inWord = true;
+        wordStart = x;
+      }
+      consecutiveEmptyCols = 0;
+    } else {
+      if (inWord) {
+        consecutiveEmptyCols++;
+        if (consecutiveEmptyCols >= gapWidth) {
+          // Close word segment
+          const wordEnd = x - gapWidth;
+          if (wordEnd > wordStart) {
+            segments.push({ x1: wordStart, x2: wordEnd });
+          }
+          inWord = false;
+        }
+      }
+    }
+  }
+
+  // Add final segment if still in word
+  if (inWord) {
+    segments.push({ x1: wordStart, x2: gx + gw - 1 });
+  }
+
+  // Merge adjacent segments if they are separated by a very small distance (noise or split strokes)
+  const mergedSegments: { x1: number; x2: number }[] = [];
+  const minMergeGap = Math.max(4, Math.round(gapWidth / 2));
+  
+  for (const seg of segments) {
+    if (mergedSegments.length === 0) {
+      mergedSegments.push(seg);
+    } else {
+      const last = mergedSegments[mergedSegments.length - 1];
+      if (seg.x1 - last.x2 < minMergeGap) {
+        // Merge segments
+        last.x2 = seg.x2;
+      } else {
+        mergedSegments.push(seg);
+      }
+    }
+  }
+
+  // Build final local bounding boxes with padding and local vertical projections
+  const wordBoxes: BoundingBox[] = [];
+  
+  for (const seg of mergedSegments) {
+    // Add 4px horizontal padding to ensure characters are not clipped
+    const paddingX = 4;
+    const x1 = Math.max(gx, seg.x1 - paddingX);
+    const x2 = Math.min(gx + gw - 1, seg.x2 + paddingX);
+    const w = x2 - x1;
+
+    if (w < 4) continue; // Skip extremely thin noise artifacts
+
+    // Calculate local vertical bounds for this segment to crop it tightly
+    const localRowCounts = new Int32Array(height);
+    for (let y = gy; y < gy + gh; y++) {
+      for (let x = x1; x <= x2; x++) {
+        const idx = (y * width + x) * 4;
+        if (rgbaBuffer[idx] < 128) {
+          localRowCounts[y]++;
+        }
+      }
+    }
+
+    let yMin = gy;
+    for (let y = gy; y < gy + gh; y++) {
+      if (localRowCounts[y] > 0) {
+        yMin = y;
+        break;
+      }
+    }
+
+    let yMax = gy + gh - 1;
+    for (let y = gy + gh - 1; y >= gy; y--) {
+      if (localRowCounts[y] > 0) {
+        yMax = y;
+        break;
+      }
+    }
+
+    // Add 4px vertical padding
+    const paddingY = 4;
+    const localY1 = Math.max(0, yMin - paddingY);
+    const localY2 = Math.min(height - 1, yMax + paddingY);
+    const h = localY2 - localY1;
+
+    wordBoxes.push({
+      x: x1,
+      y: localY1,
+      w: w,
+      h: h > 0 ? h : 1
+    });
+  }
+
+  // Fallback if no segments found
+  if (wordBoxes.length === 0) {
+    return [globalBbox];
+  }
+
+  return wordBoxes;
+};
+
+/**
  * Standard clinical single-dose and daily-dose values extracted from treatment guidelines.
  */
 const STANDARD_DOSES = [
@@ -334,6 +474,8 @@ const ML_SUFFIXES = new Set([
 
 const GRAMS_SUFFIXES = new Set(['g', 'gm']);
 
+const HIGH_CONF_SUFFIXES = new Set(['mg', 'mcg', 'ml', 'g', 'gm']);
+
 const EXCLUDED_TOKENS = new Set([
   'bd', 'tds', 'qds', 'od', 'hs', 'prn', 'bid', 'tid', 'qid', 'twice', 'three', 'four', 'daily',
   'nocte', 'mane', 'stat', 'pc', 'ac', 'po', 'tabs', 'tab', 'caps', 'cap', 'mg', 'ml', 'g', 'gm'
@@ -387,13 +529,18 @@ const postProcessOcrText = (text: string): string => {
     // Snap to closest standard dosage strength
     const snapped = snapToStandardDose(numericVal);
     
-    if (STANDARD_DOSES.includes(snapped)) {
+    const hasSnapped = STANDARD_DOSES.includes(snapped);
+    const isHighConfSuffix = HIGH_CONF_SUFFIXES.has(suffix);
+
+    if (hasSnapped) {
       const resolvedSuffix = ML_SUFFIXES.has(suffix) ? 'ml' : 'mg';
       return snapped.toString() + resolvedSuffix;
     }
     
-    // Fallback if it didn't snap and has no suffix (keep original)
-    if (!suffix) {
+    // If it didn't snap:
+    // - Keep original if it has no suffix or a low-confidence suffix (prevents brand names like Lipit0r matching)
+    // - Map to normalized unit if it has a high-confidence suffix
+    if (!suffix || !isHighConfSuffix) {
       return token;
     }
     
@@ -436,33 +583,51 @@ const api = {
 
       // 1. Detect global bounding box of all ink in the line strip
       console.log(`[OCR] Detecting global bounding box on binarized image (${width}x${height})...`);
-      const bbox = findGlobalBoundingBox(rgbaBuffer, width, height, 2);
-      console.log(`[OCR] BBox detected: x=${bbox.x}, y=${bbox.y}, w=${bbox.w}, h=${bbox.h}`);
+      const globalBbox = findGlobalBoundingBox(rgbaBuffer, width, height, 2);
+      console.log(`[OCR] Global BBox: x=${globalBbox.x}, y=${globalBbox.y}, w=${globalBbox.w}, h=${globalBbox.h}`);
 
-      // 2. Crop to text bounding box
-      const subBuffer = extractSubImage(rgbaBuffer, width, bbox);
+      // 2. Segment the global bounding box into separate words
+      const wordBoxes = segmentLineIntoWords(rgbaBuffer, width, height, globalBbox, 1);
+      console.log(`[OCR] Segmented line into ${wordBoxes.length} word box(es)`);
 
-      // 3. Preprocess the line crop (aspect-ratio preserved letterbox resize to 512x128)
-      const floatData = preprocessImageData(subBuffer, bbox.w, bbox.h, 512, 128);
+      const decodedWords: string[] = [];
 
-      // 4. Create ONNX Tensor
-      const tensor = new ort.Tensor('float32', floatData, [1, 1, 128, 512]);
+      // 3. Process each word individually
+      for (let i = 0; i < wordBoxes.length; i++) {
+        const box = wordBoxes[i];
+        console.log(`[OCR] Word segment ${i + 1}/${wordBoxes.length}: x=${box.x}, y=${box.y}, w=${box.w}, h=${box.h}`);
+        
+        // 4. Crop image to local word bounding box
+        const subBuffer = extractSubImage(rgbaBuffer, width, box);
+        
+        // 5. Preprocess (resize and letterbox to 512x128 preserving aspect ratio)
+        const floatData = preprocessImageData(subBuffer, box.w, box.h, 512, 128);
+        
+        // 6. Create ONNX Tensor and execute inference
+        const tensor = new ort.Tensor('float32', floatData, [1, 1, 128, 512]);
+        const feeds = { input_images: tensor };
+        const results = await session.run(feeds);
+        
+        const outputTensor = results.output_logits;
+        const [, timeSteps, numClasses] = outputTensor.dims;
+        const logitsData = outputTensor.data as Float32Array;
+        
+        // 7. Decode using CTC greedy decoder
+        const decodedWord = decodeCTC(logitsData, timeSteps, numClasses);
+        console.log(`[OCR] Word ${i + 1} raw decoded: "${decodedWord}"`);
+        
+        if (decodedWord.trim()) {
+          decodedWords.push(decodedWord.trim());
+        }
+      }
 
-      // 5. Run inference
-      const feeds = { input_images: tensor };
-      const results = await session.run(feeds);
-      
-      const outputTensor = results.output_logits;
-      const [, timeSteps, numClasses] = outputTensor.dims;
-      const logitsData = outputTensor.data as Float32Array;
+      // 8. Join decoded segments
+      const decodedText = decodedWords.join(' ');
+      console.log(`[OCR] Full Line Decoded: "${decodedText}"`);
 
-      // 6. Decode logits using CTC greedy decoder
-      const decodedText = decodeCTC(logitsData, timeSteps, numClasses);
-      console.log(`[OCR] Raw Decoded OCR Line: "${decodedText}"`);
-
-      // 7. Post-process to translate digits and normalize suffixes
+      // 9. Post-process to translate digits and normalize suffixes
       const postProcessedText = postProcessOcrText(decodedText);
-      console.log(`[OCR] Post-Processed OCR Line: "${postProcessedText}"`);
+      console.log(`[OCR] Post-Processed OCR: "${postProcessedText}"`);
 
       return {
         text: postProcessedText,
