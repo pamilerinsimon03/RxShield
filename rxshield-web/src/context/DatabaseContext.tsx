@@ -34,22 +34,10 @@ export const DatabaseProvider = ({ children }: { children: React.ReactNode }): J
         apiRef.current = api;
 
         console.log('Initializing SQLite WASM inside worker...');
-        const { opfs } = await api.initDb();
-        console.log('Database worker initialized. OPFS support:', opfs);
+        const { opfs, initialized } = await api.initDb();
+        console.log('Database worker initialized. OPFS support:', opfs, 'Seeded:', initialized);
 
-        let needSeed = true;
-        if (opfs && typeof navigator !== 'undefined' && navigator.storage) {
-          try {
-            const root = await navigator.storage.getDirectory();
-            // Check if DB file already exists in OPFS
-            await root.getFileHandle('rxshield_core.db', { create: false });
-            needSeed = false;
-            console.log('OPFS database file already exists. Skipping fetch/seeding.');
-          } catch (e) {
-            console.log('OPFS database file does not exist. Fetching baseline DB...');
-            needSeed = true;
-          }
-        }
+        const needSeed = !initialized;
 
         if (needSeed) {
           console.log('Fetching database asset /database/rxshield_core.db...');

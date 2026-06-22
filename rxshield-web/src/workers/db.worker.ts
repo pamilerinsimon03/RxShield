@@ -131,7 +131,7 @@ const matchDrugNameOnly = (text: string): { matched: boolean; confidence: number
 };
 
 const api = {
-  async initDb(): Promise<{ opfs: boolean }> {
+  async initDb(): Promise<{ opfs: boolean; initialized: boolean }> {
     try {
       sqlite3 = await sqlite3InitModule({
         print: console.log,
@@ -141,6 +141,7 @@ const api = {
       useOpfs = !!sqlite3.opfs;
       console.log('SQLite initialized. OPFS support:', useOpfs);
 
+      let initialized = false;
       if (useOpfs) {
         try {
           const root = await navigator.storage.getDirectory();
@@ -157,8 +158,27 @@ const api = {
               overridden_checks TEXT
             );`
           });
+
+          // Check if drugs table exists and contains records
+          const tables: any[] = [];
+          db.exec({
+            sql: "SELECT name FROM sqlite_master WHERE type='table' AND name='drugs';",
+            rowMode: 'object',
+            callback: (row: any) => {
+              tables.push(row);
+            }
+          });
+
+          if (tables.length > 0) {
+            initialized = true;
+            console.log('Drugs table verified. OPFS database is initialized and seeded.');
+          } else {
+            console.log('Drugs table not found in existing OPFS database. Forcing re-seed.');
+            db.close();
+            db = null;
+          }
         } catch (e) {
-          console.log('OPFS database file not found. Ready for seeding.');
+          console.log('OPFS database file not found or corrupted. Ready for seeding:', e instanceof Error ? e.message : String(e));
         }
       } else {
         db = new sqlite3.oo1.DB();
@@ -174,7 +194,7 @@ const api = {
           );`
         });
       }
-      return { opfs: useOpfs };
+      return { opfs: useOpfs, initialized };
     } catch (error) {
       console.error('Failed to initialize SQLite WASM:', error);
       throw error;
