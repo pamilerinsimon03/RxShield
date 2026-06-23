@@ -391,6 +391,13 @@ def clean_and_validate():
         
         df_agg = df.groupby('generic_name', as_index=False).agg(agg_funcs)
         
+        # Force demographic flags for known high-risk medications (e.g. METHOTREXATE)
+        for idx, row in df_agg.iterrows():
+            gname = str(row['generic_name']).upper()
+            if 'METHOTREXATE' in gname:
+                df_agg.at[idx, 'requires_pregnancy_check'] = 1
+                df_agg.at[idx, 'requires_renal_check'] = 1
+
         # Cast demographic check flags to strict integers 0 or 1
         df_agg['requires_pregnancy_check'] = df_agg['requires_pregnancy_check'].astype(int)
         df_agg['requires_renal_check'] = df_agg['requires_renal_check'].astype(int)

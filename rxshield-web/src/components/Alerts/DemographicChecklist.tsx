@@ -21,11 +21,7 @@ export const DemographicChecklist: React.FC<DemographicChecklistProps> = ({ vali
         checked: false
       });
     }
-    // Methotrexate or explicit renal check requires renal levels confirmation
-    if (
-      validationData?.genericName?.toLowerCase().includes('methotrexate') || 
-      validationData?.requiresRenalCheck === 1
-    ) {
+    if (validationData?.requiresRenalCheck === 1) {
       checklistItems.push({
         id: 'renal',
         label: 'Verify renal clearance levels (eGFR/Serum Creatinine) are within safe parameters',

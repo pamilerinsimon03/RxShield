@@ -288,9 +288,9 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
         if (d.max_daily_dose_mg > 0 && calculatedDailyDose > d.max_daily_dose_mg) {
           verdict = 'DANGER';
           message = `Daily dose (${calculatedDailyDose}mg) exceeds maximum guideline limit (${d.max_daily_dose_mg}mg) for ${d.generic_name}.`;
-        } else if (d.requires_pregnancy_check === 1 || d.requires_renal_check === 1) {
+        } else if (valData.requiresPregnancyCheck === 1 || valData.requiresRenalCheck === 1) {
           verdict = 'WARNING';
-          message = `Active contraindication: ${d.requires_pregnancy_check === 1 ? 'pregnancy check required' : ''}${d.requires_pregnancy_check === 1 && d.requires_renal_check === 1 ? ' & ' : ''}${d.requires_renal_check === 1 ? 'renal clearance check required' : ''}.`;
+          message = `Active contraindication: ${valData.requiresPregnancyCheck === 1 ? 'pregnancy check required' : ''}${valData.requiresPregnancyCheck === 1 && valData.requiresRenalCheck === 1 ? ' & ' : ''}${valData.requiresRenalCheck === 1 ? 'renal clearance check required' : ''}.`;
         }
       }
 
