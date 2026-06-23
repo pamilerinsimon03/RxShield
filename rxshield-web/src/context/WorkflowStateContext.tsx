@@ -24,7 +24,7 @@ interface WorkflowContextProps {
   resetWorkflow: () => void;
   appendLog: (log: string) => void;
   runMockInference: () => void;
-  runInference: (rgbaBuffer: Uint8ClampedArray, width: number, height: number) => void;
+  runInference: (rgbaBuffer: Uint8ClampedArray, width: number, height: number, scanMode?: 'line' | 'block') => void;
   triggerCrash: () => void;
   simulatePipelineMock: (scenario: 'SCENARIO_A' | 'SCENARIO_B' | 'SCENARIO_C') => void;
 }
@@ -166,7 +166,12 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const runInference = async (rgbaBuffer: Uint8ClampedArray, width: number, height: number) => {
+  const runInference = async (
+    rgbaBuffer: Uint8ClampedArray,
+    width: number,
+    height: number,
+    scanMode: 'line' | 'block' = 'line'
+  ) => {
     resetWorkflow();
     setIsProcessing(true);
     setErrorMsg(null);
@@ -178,12 +183,12 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
         ocrServiceRef.current = new OcrService();
       }
 
-      const parseResult = await parsePrescription(rgbaBuffer, width, height);
+      const parseResult = await parsePrescription(rgbaBuffer, width, height, scanMode);
       const text = parseResult.text || '';
       
       setLogs((prev) => [
         ...prev,
-        `[App] Character extraction complete (Source: ${parseResult.source.toUpperCase()}): "${text}"`
+        `[App] Character extraction complete (Source: ${parseResult.source.toUpperCase()}): "${text.replace(/\n/g, ' | ')}"`
       ]);
 
       const tokens = text.split(/\s+/).filter(Boolean);
@@ -191,108 +196,162 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
 
       // Step 2: VALIDATION
       setPhase('VALIDATION');
-      setLogs((prev) => [...prev, `[App] Querying SQLite with matched candidates for "${text}"...`]);
+      setLogs((prev) => [...prev, `[App] Querying SQLite with matched candidates...`]);
 
-      const match = await matchDrug(text);
+      // Split text by lines to support multi-line validation
+      const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+      const matches = await Promise.all(lines.map((line) => matchDrug(line)));
 
       // Delay 500ms for UX transition showing raw tokens before auto-correcting them
       await new Promise((resolve) => setTimeout(resolve, 500));
 
-      if (match.matched && match.matchedString && tokens.length > 0) {
-        const correctedTokens = [...tokens];
-        let replaced = false;
-        for (let i = 0; i < correctedTokens.length; i++) {
-          const score = getFuzzySimilarity(correctedTokens[i], match.matchedString);
-          if (score >= 0.60) {
-            correctedTokens[i] = match.matchedString;
-            replaced = true;
-            break;
+      let correctedTokens = [...tokens];
+      for (let idx = 0; idx < lines.length; idx++) {
+        const match = matches[idx];
+        const lineText = lines[idx];
+        if (match && match.matched && match.matchedString) {
+          const lineTokens = lineText.split(/\s+/).filter(Boolean);
+          let replaced = false;
+          for (let i = 0; i < correctedTokens.length; i++) {
+            const score = getFuzzySimilarity(correctedTokens[i], match.matchedString);
+            if (score >= 0.60) {
+              correctedTokens[i] = match.matchedString;
+              replaced = true;
+              break;
+            }
+          }
+          if (!replaced && lineTokens.length > 0) {
+            const firstToken = lineTokens[0];
+            const cIdx = correctedTokens.findIndex(
+              (t) => t.toLowerCase() === firstToken.toLowerCase()
+            );
+            if (cIdx !== -1) {
+              correctedTokens[cIdx] = match.matchedString;
+            }
           }
         }
-        if (!replaced) {
-          correctedTokens[0] = match.matchedString;
-        }
-        setExtractedTokens(correctedTokens);
       }
+      setExtractedTokens(correctedTokens);
 
       // Step 3: COMPLETE (safety rule evaluation)
       let verdict = 'PASS';
-      let message = 'Dosage Matches NSTG Guidelines. No Known Interactions.';
-      let citation = 'NSTG Section 3.1, Page 45'; // default fallback
-      
+      let messages: string[] = [];
+      let citations: string[] = [];
+      let combinedGenericNames: string[] = [];
+      let combinedRequiresPregnancyCheck = 0;
+      let combinedRequiresRenalCheck = 0;
+      let combinedDailyDoseMg = 0;
+      let combinedMaxDailyDoseMg = 0;
+
       const textLower = text.toLowerCase();
       const words = textLower.split(/\s+/);
-      const hasSimvastatin = words.some(w => getFuzzySimilarity(w, 'simvastatin') >= 0.70);
-      const hasClarithromycin = words.some(w => getFuzzySimilarity(w, 'clarithromycin') >= 0.70);
+      const hasSimvastatin = words.some((w) => getFuzzySimilarity(w, 'simvastatin') >= 0.70);
+      const hasClarithromycin = words.some((w) => getFuzzySimilarity(w, 'clarithromycin') >= 0.70);
 
-      // Check toxic interactions first
+      // Check toxic interactions first across the entire prescription text
       if (hasSimvastatin && hasClarithromycin) {
         verdict = 'DANGER';
-        message = 'Lethal drug interaction: Clarithromycin co-administration contraindicated with Simvastatin due to severe risk of rhabdomyolysis.';
-        citation = 'NSTG Chapter 7, Page 143';
+        messages.push(
+          'Lethal drug interaction: Clarithromycin co-administration contraindicated with Simvastatin due to severe risk of rhabdomyolysis.'
+        );
+        citations.push('NSTG Chapter 7, Page 143');
         setValidationData({
           genericName: 'Clarithromycin + Simvastatin',
           requiresPregnancyCheck: 0,
           requiresRenalCheck: 0,
           dailyDoseMg: 540,
-          nstgMaxDailyDoseMg: 0
-        });
-      } else if (!match.matched) {
-        verdict = 'WARNING';
-        message = match.error || `Medication not recognized in database. Manual clinical check required.`;
-        citation = 'NSTG Section 1.2 (Unrecognized Compounds)';
-        setValidationData({
-          genericName: text,
-          requiresPregnancyCheck: 0,
-          requiresRenalCheck: 0
+          nstgMaxDailyDoseMg: 0,
         });
       } else {
-        const d = match.data;
-        citation = d.guideline_citation || citation;
-        
-        // Parse daily dose and check limits
-        let doseMg = d.max_single_dose_mg || 0; // fallback
-        let matches = textLower.match(/(\d+(?:\.\d+)?)\s*mg/);
-        if (!matches) {
-          matches = textLower.match(/(\d+(?:\.\d+)?)/);
-        }
-        if (matches && matches[1]) {
-          doseMg = parseFloat(matches[1]);
+        // Evaluate each line individually
+        for (let idx = 0; idx < lines.length; idx++) {
+          const match = matches[idx];
+          const lineText = lines[idx];
+          const lineTextLower = lineText.toLowerCase();
+          const lineWords = lineTextLower.split(/\s+/);
+
+          if (!match.matched) {
+            if (verdict !== 'DANGER') verdict = 'WARNING';
+            messages.push(
+              match.error || `Medication not recognized in database. Manual clinical check required.`
+            );
+            citations.push('NSTG Section 1.2 (Unrecognized Compounds)');
+            combinedGenericNames.push(lineText);
+          } else {
+            const d = match.data;
+            combinedGenericNames.push(d.generic_name);
+            if (d.requires_pregnancy_check === 1) combinedRequiresPregnancyCheck = 1;
+            if (d.requires_renal_check === 1) combinedRequiresRenalCheck = 1;
+            citations.push(d.guideline_citation || 'NSTG Section 3.1, Page 45');
+
+            // Parse daily dose and check limits
+            let doseMg = d.max_single_dose_mg || 0; // fallback
+            let matchesDose = lineTextLower.match(/(\d+(?:\.\d+)?)\s*mg/);
+            if (!matchesDose) {
+              matchesDose = lineTextLower.match(/(\d+(?:\.\d+)?)/);
+            }
+            if (matchesDose && matchesDose[1]) {
+              doseMg = parseFloat(matchesDose[1]);
+            }
+
+            // Determine frequency using the robust visual equivalence mapping
+            let frequency = 1;
+            const hasBD = lineWords.some((w) =>
+              ['bd', 'bid', 'twice', 'bl', 'b1', 'bo', 'bd5', 'rfy', '8l'].includes(w)
+            );
+            const hasTDS = lineWords.some((w) =>
+              ['tds', 'tid', 'three', 'td5', 't18', 'tds5', 'td', 'tles'].includes(w)
+            );
+            const hasQDS = lineWords.some((w) => ['qds', 'qid', 'four', 'qd5'].includes(w));
+
+            if (hasBD) {
+              frequency = 2;
+            } else if (hasTDS) {
+              frequency = 3;
+            } else if (hasQDS) {
+              frequency = 4;
+            }
+
+            const calculatedDailyDose = doseMg * frequency;
+            combinedDailyDoseMg += calculatedDailyDose;
+            combinedMaxDailyDoseMg += d.max_daily_dose_mg;
+
+            if (d.max_daily_dose_mg > 0 && calculatedDailyDose > d.max_daily_dose_mg) {
+              verdict = 'DANGER';
+              messages.push(
+                `Daily dose (${calculatedDailyDose}mg) exceeds maximum guideline limit (${d.max_daily_dose_mg}mg) for ${d.generic_name}.`
+              );
+            } else if (d.requires_pregnancy_check === 1 || d.requires_renal_check === 1) {
+              if (verdict !== 'DANGER') verdict = 'WARNING';
+              messages.push(
+                `Active contraindication: ${
+                  d.requires_pregnancy_check === 1 ? 'pregnancy check required' : ''
+                }${
+                  d.requires_pregnancy_check === 1 && d.requires_renal_check === 1 ? ' & ' : ''
+                }${d.requires_renal_check === 1 ? 'renal clearance check required' : ''} for ${
+                  d.generic_name
+                }.`
+              );
+            }
+          }
         }
 
-        // Determine frequency using the robust visual equivalence mapping
-        let frequency = 1;
-        const hasBD = words.some(w => ['bd', 'bid', 'twice', 'bl', 'b1', 'bo', 'bd5', 'rfy', '8l'].includes(w));
-        const hasTDS = words.some(w => ['tds', 'tid', 'three', 'td5', 't18', 'tds5', 'td', 'tles'].includes(w));
-        const hasQDS = words.some(w => ['qds', 'qid', 'four', 'qd5'].includes(w));
-        
-        if (hasBD) {
-          frequency = 2;
-        } else if (hasTDS) {
-          frequency = 3;
-        } else if (hasQDS) {
-          frequency = 4;
+        if (messages.length === 0) {
+          messages.push('Dosage Matches NSTG Guidelines. No Known Interactions.');
         }
 
-        const calculatedDailyDose = doseMg * frequency;
-        
-        const valData = {
-          genericName: d.generic_name,
-          requiresPregnancyCheck: d.requires_pregnancy_check,
-          requiresRenalCheck: d.requires_renal_check,
-          dailyDoseMg: calculatedDailyDose,
-          nstgMaxDailyDoseMg: d.max_daily_dose_mg
-        };
-        setValidationData(valData);
-
-        if (d.max_daily_dose_mg > 0 && calculatedDailyDose > d.max_daily_dose_mg) {
-          verdict = 'DANGER';
-          message = `Daily dose (${calculatedDailyDose}mg) exceeds maximum guideline limit (${d.max_daily_dose_mg}mg) for ${d.generic_name}.`;
-        } else if (valData.requiresPregnancyCheck === 1 || valData.requiresRenalCheck === 1) {
-          verdict = 'WARNING';
-          message = `Active contraindication: ${valData.requiresPregnancyCheck === 1 ? 'pregnancy check required' : ''}${valData.requiresPregnancyCheck === 1 && valData.requiresRenalCheck === 1 ? ' & ' : ''}${valData.requiresRenalCheck === 1 ? 'renal clearance check required' : ''}.`;
-        }
+        setValidationData({
+          genericName: combinedGenericNames.join(' + '),
+          requiresPregnancyCheck: combinedRequiresPregnancyCheck,
+          requiresRenalCheck: combinedRequiresRenalCheck,
+          dailyDoseMg: combinedDailyDoseMg,
+          nstgMaxDailyDoseMg: combinedMaxDailyDoseMg,
+        });
       }
+
+      // Combine messages and citations for the final verdict
+      const message = messages.join(' | ');
+      const citation = Array.from(new Set(citations)).join(' ; ');
 
       setPhase('COMPLETE');
       setFinalVerdict({

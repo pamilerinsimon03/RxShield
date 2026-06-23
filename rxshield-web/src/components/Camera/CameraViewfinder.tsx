@@ -72,7 +72,7 @@ export const CameraViewfinder: React.FC = () => {
     setBinarizedCrop(binarized);
 
     // 5. Send raw pixel buffer to hybrid OCR parser
-    runInference(rawDataForWorker, binarized.width, binarized.height);
+    runInference(rawDataForWorker, binarized.width, binarized.height, scanMode);
   };
 
   const handleRetake = () => {

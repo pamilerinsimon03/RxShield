@@ -13,21 +13,51 @@ export const captureAndCropFrame = (
 
   const vw = videoEl.videoWidth;
   const vh = videoEl.videoHeight;
-  if (!vw || !vh) return null;
+  const cw = videoEl.clientWidth;
+  const ch = videoEl.clientHeight;
 
-  // Crop a horizontal text alignment strip
-  const cropW = Math.floor(vw * 0.9); // 90% width
-  const cropH = Math.floor(vh * cropRatioH);
-  const cropX = Math.floor((vw - cropW) / 2);
-  const cropY = Math.floor(vh * cropRatioY);
+  if (!vw || !vh || !cw || !ch) return null;
 
-  canvasEl.width = cropW;
-  canvasEl.height = cropH;
+  // 1. Calculate the scale factor of object-cover
+  // object-cover scales the video to completely fill the container while preserving aspect ratio
+  const scale = Math.max(cw / vw, ch / vh);
+
+  // 2. Calculate the scaled dimensions of the video stream
+  const sw = vw * scale;
+  const sh = vh * scale;
+
+  // 3. Calculate offsets of the scaled video inside the container (centered)
+  const offsetX = (cw - sw) / 2;
+  const offsetY = (ch - sh) / 2;
+
+  // 4. In container coordinate space, define the red reticle crop box:
+  // - Horizontal bounds: centered, bounded by 32px (w-8) side bars
+  const rectX = 32;
+  const rectW = Math.max(10, cw - 64);
+  // - Vertical bounds: relative to container height
+  const rectY = ch * cropRatioY;
+  const rectH = ch * cropRatioH;
+
+  // 5. Map container coordinates back to native video coordinates
+  const videoX = Math.floor((rectX - offsetX) / scale);
+  const videoW = Math.floor(rectW / scale);
+  const videoY = Math.floor((rectY - offsetY) / scale);
+  const videoH = Math.floor(rectH / scale);
+
+  // 6. Clamp coordinates to valid video boundaries
+  const clampedX = Math.max(0, Math.min(vw - 1, videoX));
+  const clampedY = Math.max(0, Math.min(vh - 1, videoY));
+  const clampedW = Math.max(1, Math.min(vw - clampedX, videoW));
+  const clampedH = Math.max(1, Math.min(vh - clampedY, videoH));
+
+  canvasEl.width = clampedW;
+  canvasEl.height = clampedH;
 
   // Draw crop sub-rectangle onto hidden canvas
-  ctx.drawImage(videoEl, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-  return ctx.getImageData(0, 0, cropW, cropH);
+  ctx.drawImage(videoEl, clampedX, clampedY, clampedW, clampedH, 0, 0, clampedW, clampedH);
+  return ctx.getImageData(0, 0, clampedW, clampedH);
 };
+
 
 /**
  * Computes the optimal threshold for binarization using Otsu's method.

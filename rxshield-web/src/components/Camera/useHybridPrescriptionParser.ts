@@ -69,7 +69,8 @@ export const useHybridPrescriptionParser = ({ ocrServiceRef, appendLog }: Parser
     async (
       rgbaBuffer: Uint8ClampedArray,
       width: number,
-      height: number
+      height: number,
+      scanMode: 'line' | 'block' = 'line'
     ): Promise<HybridParseResult> => {
       // 1. Instantly check connectivity
       appendLog('[Orchestrator] Probing connection speed and reachability...');
@@ -110,13 +111,52 @@ export const useHybridPrescriptionParser = ({ ocrServiceRef, appendLog }: Parser
         appendLog('[Cloud Track] Base64 encoding visual payload...');
         const base64Image = convertRgbaToBase64(rgbaBuffer, width, height);
 
-        const prompt = `Analyze this cropped handwritten image from a medical prescription.
+        const isBlock = scanMode === 'block';
+
+        const prompt = isBlock
+          ? `Analyze this cropped handwritten image of a medical prescription containing multiple lines of medications.
+Extract the medication details for each line.
+Return a JSON object with a "lines" array, where each item has the following fields:
+- medication: the brand name or generic name (e.g. "Amoxil", "Lasix", "Lipitor", "Methotrexate")
+- dosage: the dosage (e.g. "2gm", "250mg", "10", "7.5mg")
+- frequency: the frequency or instructions (e.g. "Daily", "TDS", "BD")
+Do not hallucinate or add any other text. Output strictly valid JSON matching this schema.`
+          : `Analyze this cropped handwritten image from a medical prescription.
 Extract the medication details.
 Return a JSON object with the following fields:
 - medication: the brand name or generic name (e.g. "Amoxil", "Lasix", "Lipitor", "Methotrexate")
 - dosage: the dosage (e.g. "2gm", "250mg", "10", "7.5mg")
 - frequency: the frequency or instructions (e.g. "Daily", "TDS", "BD")
 Do not hallucinate or add any other text. Output strictly valid JSON matching this schema.`;
+
+        const responseSchema = isBlock
+          ? {
+              type: 'OBJECT',
+              properties: {
+                lines: {
+                  type: 'ARRAY',
+                  items: {
+                    type: 'OBJECT',
+                    properties: {
+                      medication: { type: 'STRING' },
+                      dosage: { type: 'STRING' },
+                      frequency: { type: 'STRING' },
+                    },
+                    required: ['medication', 'dosage', 'frequency'],
+                  },
+                },
+              },
+              required: ['lines'],
+            }
+          : {
+              type: 'OBJECT',
+              properties: {
+                medication: { type: 'STRING' },
+                dosage: { type: 'STRING' },
+                frequency: { type: 'STRING' },
+              },
+              required: ['medication', 'dosage', 'frequency'],
+            };
 
         const requestBody = {
           contents: [
@@ -134,15 +174,7 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
           ],
           generationConfig: {
             responseMimeType: 'application/json',
-            responseSchema: {
-              type: 'OBJECT',
-              properties: {
-                medication: { type: 'STRING' },
-                dosage: { type: 'STRING' },
-                frequency: { type: 'STRING' },
-              },
-              required: ['medication', 'dosage', 'frequency'],
-            },
+            responseSchema,
           },
         };
 
@@ -177,6 +209,24 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
           return negativeWords.includes(normalized);
         };
 
+        const parseCloudResponse = (jsonText: string): string => {
+          const parsed = JSON.parse(jsonText.trim());
+          if (isBlock && parsed.lines && Array.isArray(parsed.lines)) {
+            return parsed.lines
+              .map((line: any) => {
+                return [line.medication, line.dosage, line.frequency]
+                  .filter(val => !isNegativeOrEmpty(val))
+                  .join(' ');
+              })
+              .filter(Boolean)
+              .join('\n');
+          } else {
+            return [parsed.medication, parsed.dosage, parsed.frequency]
+              .filter(val => !isNegativeOrEmpty(val))
+              .join(' ');
+          }
+        };
+
         const runGeminiRequest = async (model: string, timeoutMs: number): Promise<string> => {
           appendLog(`[Cloud Track] Dispatching fetch to Gemini (${model})...`);
           const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -199,12 +249,8 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
             throw new Error(`Empty payload returned from Gemini (${model}).`);
           }
 
-          const parsed = JSON.parse(jsonText.trim());
-          const tokens = [parsed.medication, parsed.dosage, parsed.frequency]
-            .filter(val => !isNegativeOrEmpty(val))
-            .join(' ');
-          
-          appendLog(`[Cloud Track] Gemini (${model}) returned: "${tokens}"`);
+          const tokens = parseCloudResponse(jsonText);
+          appendLog(`[Cloud Track] Gemini (${model}) parsed result:\n${tokens}`);
           return tokens;
         };
 
@@ -255,12 +301,8 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
             throw new Error('Empty payload returned from Groq.');
           }
 
-          const parsed = JSON.parse(jsonText.trim());
-          const tokens = [parsed.medication, parsed.dosage, parsed.frequency]
-            .filter(val => !isNegativeOrEmpty(val))
-            .join(' ');
-          
-          appendLog(`[Cloud Track] Groq returned: "${tokens}"`);
+          const tokens = parseCloudResponse(jsonText);
+          appendLog(`[Cloud Track] Groq parsed result:\n${tokens}`);
           return tokens;
         };
 
