@@ -10,6 +10,8 @@ export const CameraViewfinder: React.FC = () => {
   const [isCaptured, setIsCaptured] = useState<boolean>(false);
   const [binarizedCrop, setBinarizedCrop] = useState<ImageData | null>(null);
 
+  const [scanMode, setScanMode] = useState<'line' | 'block'>('line');
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hiddenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -52,8 +54,10 @@ export const CameraViewfinder: React.FC = () => {
   const handleCapture = () => {
     if (!videoRef.current || !hiddenCanvasRef.current) return;
 
-    // 1. Capture and crop center text strip (centered at Y: 40%, Height: 20%)
-    const rawCrop = captureAndCropFrame(videoRef.current, hiddenCanvasRef.current, 0.40, 0.20);
+    // 1. Capture and crop center text strip/block depending on scanMode
+    const cropRatioY = scanMode === 'line' ? 0.40 : 0.25;
+    const cropRatioH = scanMode === 'line' ? 0.20 : 0.50;
+    const rawCrop = captureAndCropFrame(videoRef.current, hiddenCanvasRef.current, cropRatioY, cropRatioH);
     if (!rawCrop) return;
 
     // 2. Stop camera stream immediately (Static Capture Economy)
@@ -85,7 +89,34 @@ export const CameraViewfinder: React.FC = () => {
           <Camera className="w-4 h-4 text-blue-600" />
           On-Device Document Capture
         </span>
-        <span className="text-[10px] font-mono text-slate-600">
+        
+        {/* Scan Mode Toggle */}
+        <div className="flex bg-slate-100 p-0.5 rounded-md border border-slate-200">
+          <button
+            onClick={() => setScanMode('line')}
+            disabled={isCaptured}
+            className={`px-2 py-0.5 text-[10px] font-bold rounded-sm transition-all ${
+              scanMode === 'line'
+                ? 'bg-white text-slate-900 shadow-sm'
+                : 'text-slate-500 hover:text-slate-700 disabled:opacity-50'
+            }`}
+          >
+            Line Scan
+          </button>
+          <button
+            onClick={() => setScanMode('block')}
+            disabled={isCaptured}
+            className={`px-2 py-0.5 text-[10px] font-bold rounded-sm transition-all ${
+              scanMode === 'block'
+                ? 'bg-white text-slate-900 shadow-sm'
+                : 'text-slate-500 hover:text-slate-700 disabled:opacity-50'
+            }`}
+          >
+            Block Scan
+          </button>
+        </div>
+
+        <span className="text-[10px] font-mono text-slate-600 hidden sm:inline">
           WASM BINARIZER ACTIVE
         </span>
       </div>
@@ -113,8 +144,14 @@ export const CameraViewfinder: React.FC = () => {
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
               {/* Overlay with transparent center strip */}
               <div className="absolute inset-0 flex flex-col">
-                <div className="flex-1 bg-black/50" /> {/* Top dim */}
-                <div className="h-16 flex shrink-0"> {/* Middle Row */}
+                <div 
+                  style={{ flexGrow: scanMode === 'line' ? 4 : 2.5 }} 
+                  className="bg-black/50 transition-all duration-300" 
+                /> {/* Top dim */}
+                <div 
+                  style={{ height: scanMode === 'line' ? '20%' : '50%' }} 
+                  className="flex shrink-0 transition-all duration-300 animate-fade-in"
+                > {/* Middle Row */}
                   <div className="w-8 bg-black/50" /> {/* Left dim */}
                   <div className="flex-1 border-y-2 border-dashed border-red-500 bg-red-500/5 relative">
                     {/* Corner Reticles */}
@@ -122,13 +159,18 @@ export const CameraViewfinder: React.FC = () => {
                     <div className="absolute top-0 right-0 w-3 h-3 border-t-2 border-r-2 border-red-500" />
                     <div className="absolute bottom-0 left-0 w-3 h-3 border-b-2 border-l-2 border-red-500" />
                     <div className="absolute bottom-0 right-0 w-3 h-3 border-b-2 border-r-2 border-red-500" />
-                    <span className="absolute inset-0 flex items-center justify-center text-[9px] font-mono font-bold text-red-500 tracking-wider uppercase drop-shadow-sm select-none">
-                      Position Handwritten Line Here
+                    <span className="absolute inset-0 flex items-center justify-center text-[9px] font-mono font-bold text-red-500 tracking-wider uppercase drop-shadow-sm select-none px-2 text-center">
+                      {scanMode === 'line' 
+                        ? "Position Handwritten Line Here" 
+                        : "Position Prescription Block Here"}
                     </span>
                   </div>
                   <div className="w-8 bg-black/50" /> {/* Right dim */}
                 </div>
-                <div className="flex-1 bg-black/50" /> {/* Bottom dim */}
+                <div 
+                  style={{ flexGrow: scanMode === 'line' ? 4 : 2.5 }} 
+                  className="bg-black/50 transition-all duration-300" 
+                /> {/* Bottom dim */}
               </div>
             </div>
             
@@ -140,8 +182,8 @@ export const CameraViewfinder: React.FC = () => {
           // Static Binarized Preview
           <div className="w-full h-full flex flex-col items-center justify-center p-4 bg-slate-900">
             <span className="text-[10px] font-mono font-bold text-slate-400 uppercase mb-2">Binarized Character Matrix</span>
-            <div className="border border-slate-700 bg-white p-1 rounded-sm max-w-full overflow-x-auto shadow-md">
-              <canvas ref={previewCanvasRef} className="h-12 w-auto object-contain bg-white" />
+            <div className="border border-slate-700 bg-white p-1 rounded-sm max-w-full overflow-x-auto shadow-md flex justify-center">
+              <canvas ref={previewCanvasRef} className="max-h-24 w-auto object-contain bg-white" />
             </div>
             <span className="text-[9px] font-mono text-slate-500 mt-2">
               Dimensions: {previewCanvasRef.current?.width || 0}x{previewCanvasRef.current?.height || 0} | Gray-1bit
