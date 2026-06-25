@@ -243,111 +243,118 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
       let combinedDailyDoseMg = 0;
       let combinedMaxDailyDoseMg = 0;
 
-      const textLower = text.toLowerCase();
-      const words = textLower.split(/\s+/);
-      const hasSimvastatin = words.some((w) => getFuzzySimilarity(w, 'simvastatin') >= 0.70);
-      const hasClarithromycin = words.some((w) => getFuzzySimilarity(w, 'clarithromycin') >= 0.70);
+      // 1. Evaluate each line individually for single-drug rules (dosages, gates)
+      for (let idx = 0; idx < lines.length; idx++) {
+        const match = matches[idx];
+        const lineText = lines[idx];
+        const lineTextLower = lineText.toLowerCase();
+        const lineWords = lineTextLower.split(/\s+/);
 
-      // Check toxic interactions first across the entire prescription text
-      if (hasSimvastatin && hasClarithromycin) {
-        verdict = 'DANGER';
-        messages.push(
-          'Lethal drug interaction: Clarithromycin co-administration contraindicated with Simvastatin due to severe risk of rhabdomyolysis.'
-        );
-        citations.push('NSTG Chapter 7, Page 143');
-        setValidationData({
-          genericName: 'Clarithromycin + Simvastatin',
-          requiresPregnancyCheck: 0,
-          requiresRenalCheck: 0,
-          dailyDoseMg: 540,
-          nstgMaxDailyDoseMg: 0,
-        });
-      } else {
-        // Evaluate each line individually
-        for (let idx = 0; idx < lines.length; idx++) {
-          const match = matches[idx];
-          const lineText = lines[idx];
-          const lineTextLower = lineText.toLowerCase();
-          const lineWords = lineTextLower.split(/\s+/);
+        if (!match.matched) {
+          if (verdict !== 'DANGER') verdict = 'WARNING';
+          messages.push(
+            match.error || `Medication not recognized in database. Manual clinical check required.`
+          );
+          citations.push('NSTG Section 1.2 (Unrecognized Compounds)');
+          combinedGenericNames.push(lineText);
+        } else {
+          const d = match.data;
+          combinedGenericNames.push(d.generic_name);
+          if (d.requires_pregnancy_check === 1) combinedRequiresPregnancyCheck = 1;
+          if (d.requires_renal_check === 1) combinedRequiresRenalCheck = 1;
+          citations.push(d.guideline_citation || 'NSTG Section 3.1, Page 45');
 
-          if (!match.matched) {
+          // Parse daily dose and check limits
+          let doseMg = d.max_single_dose_mg || 0; // fallback
+          let matchesDose = lineTextLower.match(/(\d+(?:\.\d+)?)\s*mg/);
+          if (!matchesDose) {
+            matchesDose = lineTextLower.match(/(\d+(?:\.\d+)?)/);
+          }
+          if (matchesDose && matchesDose[1]) {
+            doseMg = parseFloat(matchesDose[1]);
+          }
+
+          // Determine frequency using the robust visual equivalence mapping
+          let frequency = 1;
+          const hasBD = lineWords.some((w) =>
+            ['bd', 'bid', 'twice', 'bl', 'b1', 'bo', 'bd5', 'rfy', '8l'].includes(w)
+          );
+          const hasTDS = lineWords.some((w) =>
+            ['tds', 'tid', 'three', 'td5', 't18', 'tds5', 'td', 'tles'].includes(w)
+          );
+          const hasQDS = lineWords.some((w) => ['qds', 'qid', 'four', 'qd5'].includes(w));
+
+          if (hasBD) {
+            frequency = 2;
+          } else if (hasTDS) {
+            frequency = 3;
+          } else if (hasQDS) {
+            frequency = 4;
+          }
+
+          const calculatedDailyDose = doseMg * frequency;
+          combinedDailyDoseMg += calculatedDailyDose;
+          combinedMaxDailyDoseMg += d.max_daily_dose_mg;
+
+          if (d.max_daily_dose_mg > 0 && calculatedDailyDose > d.max_daily_dose_mg) {
+            verdict = 'DANGER';
+            messages.push(
+              `Daily dose (${calculatedDailyDose}mg) exceeds maximum guideline limit (${d.max_daily_dose_mg}mg) for ${d.generic_name}.`
+            );
+          } else if (d.requires_pregnancy_check === 1 || d.requires_renal_check === 1) {
             if (verdict !== 'DANGER') verdict = 'WARNING';
             messages.push(
-              match.error || `Medication not recognized in database. Manual clinical check required.`
+              `Active contraindication: ${
+                d.requires_pregnancy_check === 1 ? 'pregnancy check required' : ''
+              }${
+                d.requires_pregnancy_check === 1 && d.requires_renal_check === 1 ? ' & ' : ''
+              }${d.requires_renal_check === 1 ? 'renal clearance check required' : ''} for ${
+                d.generic_name
+              }.`
             );
-            citations.push('NSTG Section 1.2 (Unrecognized Compounds)');
-            combinedGenericNames.push(lineText);
-          } else {
-            const d = match.data;
-            combinedGenericNames.push(d.generic_name);
-            if (d.requires_pregnancy_check === 1) combinedRequiresPregnancyCheck = 1;
-            if (d.requires_renal_check === 1) combinedRequiresRenalCheck = 1;
-            citations.push(d.guideline_citation || 'NSTG Section 3.1, Page 45');
-
-            // Parse daily dose and check limits
-            let doseMg = d.max_single_dose_mg || 0; // fallback
-            let matchesDose = lineTextLower.match(/(\d+(?:\.\d+)?)\s*mg/);
-            if (!matchesDose) {
-              matchesDose = lineTextLower.match(/(\d+(?:\.\d+)?)/);
-            }
-            if (matchesDose && matchesDose[1]) {
-              doseMg = parseFloat(matchesDose[1]);
-            }
-
-            // Determine frequency using the robust visual equivalence mapping
-            let frequency = 1;
-            const hasBD = lineWords.some((w) =>
-              ['bd', 'bid', 'twice', 'bl', 'b1', 'bo', 'bd5', 'rfy', '8l'].includes(w)
-            );
-            const hasTDS = lineWords.some((w) =>
-              ['tds', 'tid', 'three', 'td5', 't18', 'tds5', 'td', 'tles'].includes(w)
-            );
-            const hasQDS = lineWords.some((w) => ['qds', 'qid', 'four', 'qd5'].includes(w));
-
-            if (hasBD) {
-              frequency = 2;
-            } else if (hasTDS) {
-              frequency = 3;
-            } else if (hasQDS) {
-              frequency = 4;
-            }
-
-            const calculatedDailyDose = doseMg * frequency;
-            combinedDailyDoseMg += calculatedDailyDose;
-            combinedMaxDailyDoseMg += d.max_daily_dose_mg;
-
-            if (d.max_daily_dose_mg > 0 && calculatedDailyDose > d.max_daily_dose_mg) {
-              verdict = 'DANGER';
-              messages.push(
-                `Daily dose (${calculatedDailyDose}mg) exceeds maximum guideline limit (${d.max_daily_dose_mg}mg) for ${d.generic_name}.`
-              );
-            } else if (d.requires_pregnancy_check === 1 || d.requires_renal_check === 1) {
-              if (verdict !== 'DANGER') verdict = 'WARNING';
-              messages.push(
-                `Active contraindication: ${
-                  d.requires_pregnancy_check === 1 ? 'pregnancy check required' : ''
-                }${
-                  d.requires_pregnancy_check === 1 && d.requires_renal_check === 1 ? ' & ' : ''
-                }${d.requires_renal_check === 1 ? 'renal clearance check required' : ''} for ${
-                  d.generic_name
-                }.`
-              );
-            }
           }
         }
-
-        if (messages.length === 0) {
-          messages.push('Dosage Matches NSTG Guidelines. No Known Interactions.');
-        }
-
-        setValidationData({
-          genericName: combinedGenericNames.join(' + '),
-          requiresPregnancyCheck: combinedRequiresPregnancyCheck,
-          requiresRenalCheck: combinedRequiresRenalCheck,
-          dailyDoseMg: combinedDailyDoseMg,
-          nstgMaxDailyDoseMg: combinedMaxDailyDoseMg,
-        });
       }
+
+      // 2. Dynamically check drug-drug interactions via SQLite queries
+      const matchedDrugs = matches.filter((m) => m && m.matched && m.data);
+      for (let i = 0; i < matchedDrugs.length; i++) {
+        for (let j = i + 1; j < matchedDrugs.length; j++) {
+          const atcA = matchedDrugs[i].data.atc_code;
+          const atcB = matchedDrugs[j].data.atc_code;
+          if (!atcA || !atcB) continue;
+
+          // Query SQLite to check if there is an interaction entry
+          const interactionRows = await query(
+            'SELECT severity, risk_description FROM drug_interactions WHERE (atc_code_a = ? AND atc_code_b = ?) OR (atc_code_a = ? AND atc_code_b = ?)',
+            [atcA, atcB, atcB, atcA]
+          );
+
+          if (interactionRows && interactionRows.length > 0) {
+            const interaction = interactionRows[0];
+            const severity = interaction.severity || 'WARNING';
+            if (severity === 'DANGER') {
+              verdict = 'DANGER';
+            } else if (severity === 'WARNING' && verdict !== 'DANGER') {
+              verdict = 'WARNING';
+            }
+            messages.push(`Drug Interaction Warning (${severity}): ${interaction.risk_description}`);
+            citations.push('OpenFDA Adverse Interactions');
+          }
+        }
+      }
+
+      if (messages.length === 0) {
+        messages.push('Dosage Matches NSTG Guidelines. No Known Interactions.');
+      }
+
+      setValidationData({
+        genericName: combinedGenericNames.join(' + '),
+        requiresPregnancyCheck: combinedRequiresPregnancyCheck,
+        requiresRenalCheck: combinedRequiresRenalCheck,
+        dailyDoseMg: combinedDailyDoseMg,
+        nstgMaxDailyDoseMg: combinedMaxDailyDoseMg,
+      });
 
       // Combine messages and citations for the final verdict
       const message = messages.join(' | ');
