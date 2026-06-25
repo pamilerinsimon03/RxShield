@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
+import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
 import * as Comlink from 'comlink';
 import type { DbWorkerApi } from '@/workers/db.worker';
 
@@ -71,26 +71,26 @@ export const DatabaseProvider = ({ children }: { children: React.ReactNode }): J
     };
   }, []);
 
-  const query = async (sql: string, params: Array<string | number> = []): Promise<any[]> => {
+  const query = useCallback(async (sql: string, params: Array<string | number> = []): Promise<any[]> => {
     if (!apiRef.current) {
       throw new Error('Database is not initialized.');
     }
     return apiRef.current.query(sql, params);
-  };
+  }, []);
 
-  const matchDrug = async (text: string): Promise<any> => {
+  const matchDrug = useCallback(async (text: string): Promise<any> => {
     if (!apiRef.current) {
       throw new Error('Database is not initialized.');
     }
     return apiRef.current.matchDrugAndJoinProtocol(text);
-  };
+  }, []);
 
-  const logOverride = async (genericName: string, signatureLock: string, overriddenChecks: string): Promise<boolean> => {
+  const logOverride = useCallback(async (genericName: string, signatureLock: string, overriddenChecks: string): Promise<boolean> => {
     if (!apiRef.current) {
       throw new Error('Database is not initialized.');
     }
     return apiRef.current.logOverride(genericName, signatureLock, overriddenChecks);
-  };
+  }, []);
 
   return (
     <DatabaseContext.Provider value={{ isDbReady, dbError, query, matchDrug, logOverride }}>

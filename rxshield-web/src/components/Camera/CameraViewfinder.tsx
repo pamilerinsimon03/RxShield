@@ -71,8 +71,23 @@ export const CameraViewfinder: React.FC = () => {
     const binarized = binarizeImageData(rawCrop, 128);
     setBinarizedCrop(binarized);
 
-    // 5. Send raw pixel buffer to hybrid OCR parser
-    runInference(rawDataForWorker, binarized.width, binarized.height, scanMode);
+    // Convert binarized ImageData to base64 Data URL to pass to context results view
+    let binarizedDataUrl = '';
+    try {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = binarized.width;
+      tempCanvas.height = binarized.height;
+      const tempCtx = tempCanvas.getContext('2d');
+      if (tempCtx) {
+        tempCtx.putImageData(binarized, 0, 0);
+        binarizedDataUrl = tempCanvas.toDataURL('image/png');
+      }
+    } catch (e) {
+      console.warn('Failed to convert canvas to data URL for preview:', e);
+    }
+
+    // 5. Send raw pixel buffer to hybrid OCR parser with the binarized thumbnail URL
+    runInference(rawDataForWorker, binarized.width, binarized.height, scanMode, binarizedDataUrl);
   };
 
   const handleRetake = () => {
@@ -84,20 +99,21 @@ export const CameraViewfinder: React.FC = () => {
 
   return (
     <div className="flex-1 flex flex-col justify-between overflow-hidden">
-      <div className="flex items-center justify-between border-b border-slate-100 pb-2 mb-2 shrink-0">
-        <span className="text-xs font-bold text-slate-900 uppercase flex items-center gap-1.5">
-          <Camera className="w-4 h-4 text-blue-600" />
+      {/* Title & Toggle Header */}
+      <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-3 shrink-0">
+        <span className="text-xs font-bold text-slate-800 uppercase flex items-center gap-1.5 tracking-wider">
+          <Camera className="w-4 h-4 text-trust-teal" />
           On-Device Document Capture
         </span>
         
-        {/* Scan Mode Toggle */}
-        <div className="flex bg-slate-100 p-0.5 rounded-md border border-slate-200">
+        {/* Premium Segmented Slider Mode Switcher */}
+        <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200/50">
           <button
             onClick={() => setScanMode('line')}
             disabled={isCaptured}
-            className={`px-2 py-0.5 text-[10px] font-bold rounded-sm transition-all ${
+            className={`px-3 py-1 text-[10px] font-bold rounded-md transition-all select-none focus:outline-none ${
               scanMode === 'line'
-                ? 'bg-white text-slate-900 shadow-sm'
+                ? 'bg-white text-slate-800 shadow-sm border border-slate-200/20'
                 : 'text-slate-500 hover:text-slate-700 disabled:opacity-50'
             }`}
           >
@@ -106,26 +122,22 @@ export const CameraViewfinder: React.FC = () => {
           <button
             onClick={() => setScanMode('block')}
             disabled={isCaptured}
-            className={`px-2 py-0.5 text-[10px] font-bold rounded-sm transition-all ${
+            className={`px-3 py-1 text-[10px] font-bold rounded-md transition-all select-none focus:outline-none ${
               scanMode === 'block'
-                ? 'bg-white text-slate-900 shadow-sm'
+                ? 'bg-white text-slate-800 shadow-sm border border-slate-200/20'
                 : 'text-slate-500 hover:text-slate-700 disabled:opacity-50'
             }`}
           >
             Block Scan
           </button>
         </div>
-
-        <span className="text-[10px] font-mono text-slate-600 hidden sm:inline">
-          WASM BINARIZER ACTIVE
-        </span>
       </div>
 
       {/* Viewport Box */}
-      <div className="flex-1 bg-slate-950 relative flex items-center justify-center overflow-hidden min-h-[140px] rounded-none border border-slate-800">
+      <div className="flex-1 bg-slate-950 relative flex items-center justify-center overflow-hidden min-h-[180px] rounded-xl border border-slate-800 shadow-inner">
         {error ? (
           // Error Panel
-          <div className="p-4 flex flex-col items-center justify-center text-center text-rose-500">
+          <div className="p-5 flex flex-col items-center justify-center text-center text-alert-red animate-fade-in">
             <AlertTriangle className="w-8 h-8 mb-2" />
             <span className="text-xs font-bold uppercase tracking-wider mb-1">Camera Initialization Fault</span>
             <p className="text-[11px] text-slate-400 max-w-[240px] leading-relaxed">{error}</p>
@@ -152,7 +164,7 @@ export const CameraViewfinder: React.FC = () => {
                   style={{ height: scanMode === 'line' ? '20%' : '50%' }} 
                   className="flex shrink-0 transition-all duration-300 animate-fade-in"
                 > {/* Middle Row */}
-                  <div className="w-8 bg-black/50" /> {/* Left dim */}
+                  <div className="w-6 bg-black/50" /> {/* Left dim */}
                   <div className="flex-1 border-y-2 border-dashed border-red-500 bg-red-500/5 relative">
                     {/* Corner Reticles */}
                     <div className="absolute top-0 left-0 w-3 h-3 border-t-2 border-l-2 border-red-500" />
@@ -165,7 +177,7 @@ export const CameraViewfinder: React.FC = () => {
                         : "Position Prescription Block Here"}
                     </span>
                   </div>
-                  <div className="w-8 bg-black/50" /> {/* Right dim */}
+                  <div className="w-6 bg-black/50" /> {/* Right dim */}
                 </div>
                 <div 
                   style={{ flexGrow: scanMode === 'line' ? 4 : 2.5 }} 
@@ -174,53 +186,50 @@ export const CameraViewfinder: React.FC = () => {
               </div>
             </div>
             
-            <div className="absolute top-2 left-2 text-[9px] font-mono text-slate-400 bg-black/60 px-2 py-0.5 rounded-sm">
+            <div className="absolute top-3 left-3 text-[9px] font-mono text-slate-300 bg-black/60 px-2 py-0.5 rounded border border-white/10">
               STREAM: ACTIVE
             </div>
+
+            {/* Floating Tactile Shutter Button */}
+            <button
+              onClick={handleCapture}
+              disabled={!stream || state.isProcessing}
+              className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-trust-teal hover:bg-trust-teal-hover active:scale-95 text-white py-2.5 px-8 rounded-full shadow-lg shadow-trust-teal/30 transition-all flex items-center justify-center gap-1.5 focus:outline-none disabled:opacity-50 z-20 cursor-pointer border border-teal-500/20"
+            >
+              <Camera className="w-4 h-4" />
+              <span className="text-[10px] font-bold uppercase tracking-wider pr-0.5">Capture</span>
+            </button>
           </>
         ) : (
           // Static Binarized Preview
-          <div className="w-full h-full flex flex-col items-center justify-center p-4 bg-slate-900">
-            <span className="text-[10px] font-mono font-bold text-slate-400 uppercase mb-2">Binarized Character Matrix</span>
-            <div className="border border-slate-700 bg-white p-1 rounded-sm max-w-full overflow-x-auto shadow-md flex justify-center">
+          <div className="w-full h-full flex flex-col items-center justify-center p-4 bg-slate-900 animate-fade-in">
+            <span className="text-[9px] font-mono font-bold text-slate-400 uppercase mb-2.5">Binarized Character Matrix</span>
+            <div className="border border-slate-700 bg-white p-1 rounded shadow-md flex justify-center">
               <canvas ref={previewCanvasRef} className="max-h-24 w-auto object-contain bg-white" />
             </div>
             <span className="text-[9px] font-mono text-slate-500 mt-2">
               Dimensions: {previewCanvasRef.current?.width || 0}x{previewCanvasRef.current?.height || 0} | Gray-1bit
             </span>
+
+            {/* Floating Tactile Retake Button */}
+            <button
+              onClick={handleRetake}
+              disabled={state.isProcessing}
+              className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-slate-800/90 hover:bg-slate-800 text-white py-2.5 px-8 rounded-full shadow-lg transition-all flex items-center justify-center gap-1.5 focus:outline-none disabled:opacity-50 z-20 cursor-pointer border border-slate-700/20"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span className="text-[10px] font-bold uppercase tracking-wider">Retake Scan</span>
+            </button>
           </div>
         )}
 
         {state.isProcessing && (
-          <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center gap-2">
-            <div className="w-7 h-7 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-            <span className="text-[10px] font-mono text-blue-300 uppercase tracking-widest">
+          <div className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center gap-2.5 z-30">
+            <div className="w-8 h-8 border-2 border-trust-teal border-t-transparent rounded-full animate-spin" />
+            <span className="text-[9px] font-mono text-teal-300 uppercase tracking-widest animate-pulse">
               Extracting logit arrays...
             </span>
           </div>
-        )}
-      </div>
-
-      {/* Control Buttons Bar */}
-      <div className="mt-3 flex items-center justify-center shrink-0">
-        {!isCaptured ? (
-          <button
-            onClick={handleCapture}
-            disabled={!stream || state.isProcessing}
-            className="w-full py-2 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:bg-slate-300 disabled:opacity-50 text-white text-xs font-bold uppercase tracking-wider rounded-md transition-colors flex items-center justify-center gap-1.5 focus:outline-none"
-          >
-            <Camera className="w-4 h-4" />
-            Trigger Camera Shutter
-          </button>
-        ) : (
-          <button
-            onClick={handleRetake}
-            disabled={state.isProcessing}
-            className="w-full py-2 bg-slate-200 hover:bg-slate-300 active:bg-slate-400 text-slate-700 text-xs font-bold uppercase tracking-wider rounded-md transition-colors flex items-center justify-center gap-1.5 focus:outline-none"
-          >
-            <RefreshCw className="w-4 h-4" />
-            Retake Snapshot
-          </button>
         )}
       </div>
 

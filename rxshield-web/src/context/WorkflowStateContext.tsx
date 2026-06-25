@@ -16,6 +16,7 @@ export interface WorkflowState {
   logs: string[];
   errorMsg: string | null;
   isProcessing: boolean;
+  capturedImageUri: string | null;
 }
 
 interface WorkflowContextProps {
@@ -24,7 +25,7 @@ interface WorkflowContextProps {
   resetWorkflow: () => void;
   appendLog: (log: string) => void;
   runMockInference: () => void;
-  runInference: (rgbaBuffer: Uint8ClampedArray, width: number, height: number, scanMode?: 'line' | 'block') => void;
+  runInference: (rgbaBuffer: Uint8ClampedArray, width: number, height: number, scanMode?: 'line' | 'block', binarizedDataUrl?: string) => void;
   triggerCrash: () => void;
   simulatePipelineMock: (scenario: 'SCENARIO_A' | 'SCENARIO_B' | 'SCENARIO_C') => void;
 }
@@ -39,6 +40,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
   const [logs, setLogs] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [capturedImageUri, setCapturedImageUri] = useState<string | null>(null);
 
   const { matchDrug, isDbReady, query } = useDatabase();
   const workerClientRef = useRef<RxShieldWorkerClient | null>(null);
@@ -142,6 +144,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
     setLogs([]);
     setErrorMsg(null);
     setIsProcessing(false);
+    setCapturedImageUri(null);
 
     if (workerClientRef.current) {
       workerClientRef.current.send({
@@ -170,11 +173,15 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
     rgbaBuffer: Uint8ClampedArray,
     width: number,
     height: number,
-    scanMode: 'line' | 'block' = 'line'
+    scanMode: 'line' | 'block' = 'line',
+    binarizedDataUrl?: string
   ) => {
     resetWorkflow();
     setIsProcessing(true);
     setErrorMsg(null);
+    if (binarizedDataUrl) {
+      setCapturedImageUri(binarizedDataUrl);
+    }
     setLogs((prev) => [...prev, `[App] Starting hybrid OCR parser on frame ${width}x${height}...`]);
     setPhase('EXTRACTION');
 
@@ -390,10 +397,43 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
+  const generateMockPrescriptionThumbnail = (text: string) => {
+    if (typeof document === 'undefined') return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = 300;
+    canvas.height = 100;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(10, 10, canvas.width - 20, canvas.height - 20);
+      ctx.fillStyle = '#000000';
+      ctx.font = 'italic bold 16px "Courier New", monospace';
+      
+      const lines = text.split('\n');
+      lines.forEach((line, idx) => {
+        ctx.fillText(line, 25, 40 + idx * 25);
+      });
+      return canvas.toDataURL('image/png');
+    }
+    return null;
+  };
+
   const simulatePipelineMock = (scenario: 'SCENARIO_A' | 'SCENARIO_B' | 'SCENARIO_C') => {
     resetWorkflow();
     setIsProcessing(true);
-    setLogs([`Triggering Judge Pitch Simulation: ${scenario}...`]);
+    setLogs([`Triggering Pitch Simulation: ${scenario}...`]);
+    
+    let mockText = '';
+    if (scenario === 'SCENARIO_A') mockText = 'Augmentin 625mg BD';
+    if (scenario === 'SCENARIO_B') mockText = 'Methotrexate 7.5mg Daily';
+    if (scenario === 'SCENARIO_C') mockText = 'Clarithromycin 500mg\nSimvastatin 20mg';
+    
+    const mockThumb = generateMockPrescriptionThumbnail(mockText);
+    setCapturedImageUri(mockThumb);
+
     if (workerClientRef.current) {
       workerClientRef.current.send({
         type: 'RUN_INFERENCE',
@@ -416,6 +456,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
     logs,
     errorMsg,
     isProcessing,
+    capturedImageUri,
   };
 
   return (

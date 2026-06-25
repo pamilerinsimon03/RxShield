@@ -7,7 +7,7 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        'app-base': '#F8FAFC',
+        'app-base': '#F8F9FA',
         'surface-card': '#FFFFFF',
         'structural-weak': '#E2E8F0',
         'clinical-primary': '#0F172A',
@@ -20,6 +20,10 @@ module.exports = {
         'brand-danger-text': '#FFFFFF',
         'accent-ai-pipeline': '#2563EB',
         'accent-ai-pulse': '#DBEAFE',
+        'trust-teal': '#008080',
+        'trust-teal-hover': '#006666',
+        'alert-amber': '#FFBF00',
+        'alert-red': '#DC3545',
       },
       borderRadius: {
         'none': '0px',
