@@ -42,7 +42,7 @@ export const MainLayout: React.FC = () => {
             RxShield Edge Core
           </span>
           <span className="text-[10px] font-mono px-2 py-0.5 bg-slate-100 rounded-sm text-slate-600">
-            v0.1.0-alpha
+            v0.1.1-alpha
           </span>
         </div>
 
