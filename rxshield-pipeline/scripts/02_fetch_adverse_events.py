@@ -76,10 +76,22 @@ def process_event(event_obj, freq_dict):
 
 def main():
     ensure_directory_structure()
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    output_csv_path = os.path.join(base_dir, 'data', 'processed', 'openfda_interactions.csv')
 
     print(f"Fetching openFDA manifest from: {MANIFEST_URL}")
-    response = requests.get(MANIFEST_URL, verify=False)
-    response.raise_for_status()
+    try:
+        response = requests.get(MANIFEST_URL, verify=False, timeout=10)
+        response.raise_for_status()
+    except (requests.exceptions.ConnectionError, requests.exceptions.HTTPError, requests.exceptions.Timeout) as e:
+        print(f"Network error trying to contact openFDA: {e}")
+        if os.path.exists(output_csv_path):
+            print(f"[Offline Fallback] Reusing existing aggregated interactions file at: {output_csv_path}")
+            return
+        else:
+            print("CRITICAL ERROR: No internet connection and no pre-existing interactions file found.")
+            raise e
+            
     manifest_data = response.json()
 
     # Extract partition list

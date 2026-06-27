@@ -38,10 +38,27 @@ def main():
     total_pages = len(doc)
     print(f"PDF contains {total_pages} total pages.")
 
+    # Serialize output raw text path
+    output_file_path = os.path.join(base_dir, 'data', 'processed', OUTPUT_FILENAME)
+    
     # Calculate 0-based indices for extraction range
     start_idx = max(0, START_PAGE - 1)
     end_idx = min(total_pages - 1, END_PAGE - 1)
     
+    try:
+        # Test if Tesseract OCR is available by doing a fast test on the first page
+        test_page = doc[start_idx]
+        test_ocr = test_page.get_textpage_ocr(language="eng", dpi=72)
+        test_page.get_text(textpage=test_ocr)
+        print("Tesseract OCR is available. Proceeding with full document extraction...")
+    except Exception as e:
+        print(f"Tesseract OCR is not available or failed: {e}")
+        if os.path.exists(output_file_path):
+            print(f"[Offline Fallback] Reusing existing OCR text file at: {output_file_path}")
+            return
+        else:
+            raise RuntimeError("Tesseract OCR failed and no pre-existing text file was found.") from e
+
     pages_to_process = list(range(start_idx, end_idx + 1))
     
     if LIMIT_PAGES is not None:

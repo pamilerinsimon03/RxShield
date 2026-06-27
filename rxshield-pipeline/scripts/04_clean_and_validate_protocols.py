@@ -23,22 +23,67 @@ def levenshtein_distance(s1, s2):
         
     return previous_row[-1]
 
+_eml_lookup_cache = {}
+_std_eml_names_cache = None
+
 def find_best_eml_match(candidate, eml_names):
     """
     Cross-references candidate name with EML names.
     Supports exact match and fuzzy Levenshtein repair (dist <= 2, conf > 90% or dist == 1).
+    Standardizes delimiters (+, -, /) and spaces before comparison.
+    Highly optimized using pre-computed standardization, length gates, and memoization.
     """
-    if candidate in eml_names:
-        return candidate, 0, 1.0
+    global _std_eml_names_cache
+    
+    # 0. Check memoization cache first
+    if candidate in _eml_lookup_cache:
+        return _eml_lookup_cache[candidate]
         
+    if candidate in eml_names:
+        res = (candidate, 0, 1.0)
+        _eml_lookup_cache[candidate] = res
+        return res
+        
+    def standardize(s):
+        # Replace slashes, hyphens, and pluses with a standardized ' + '
+        s = re.sub(r'[\s\/\-\+]+', ' + ', s.upper())
+        s = s.strip(' +')
+        return " ".join(s.split())
+        
+    std_candidate = standardize(candidate)
+    if not std_candidate:
+        res = (None, 999, 0.0)
+        _eml_lookup_cache[candidate] = res
+        return res
+        
+    # Pre-build standardized EML cache once
+    if _std_eml_names_cache is None:
+        _std_eml_names_cache = [(eml, standardize(eml)) for eml in eml_names]
+        
+    # 1. Try exact standardized match
+    for eml_name, std_eml in _std_eml_names_cache:
+        if std_eml == std_candidate:
+            res = (eml_name, 0, 1.0)
+            _eml_lookup_cache[candidate] = res
+            return res
+            
+    # 2. Try fuzzy standardized match
     best_match = None
     min_dist = 999
     max_confidence = 0.0
     
-    for eml_name in eml_names:
-        dist = levenshtein_distance(candidate, eml_name)
+    len_cand = len(std_candidate)
+    
+    for eml_name, std_eml in _std_eml_names_cache:
+        # Length gate check: if length difference is > 2, distance must be > 2
+        if abs(len_cand - len(std_eml)) > 2:
+            continue
+            
+        dist = levenshtein_distance(std_candidate, std_eml)
         if dist <= 2:
-            max_len = max(len(candidate), len(eml_name))
+            max_len = max(len_cand, len(std_eml))
+            if max_len == 0:
+                continue
             confidence = 1.0 - (dist / max_len)
             if dist == 1 or confidence > 0.90:
                 if dist < min_dist:
@@ -49,7 +94,9 @@ def find_best_eml_match(candidate, eml_names):
                     best_match = eml_name
                     max_confidence = confidence
                     
-    return best_match, min_dist, max_confidence
+    res = (best_match, min_dist, max_confidence)
+    _eml_lookup_cache[candidate] = res
+    return res
 
 def convert_to_mg(val_str, unit):
     """
@@ -231,7 +278,7 @@ def clean_and_validate():
 
     page_pattern = re.compile(r'^--- PAGE (\d+) ---$')
     chapter_pattern = re.compile(r'^CHAPTER\s+(\d+)\s*:?\s*(.*)$', re.IGNORECASE)
-    drug_pattern = re.compile(r'^-\s*([A-Z\s+\/\-]+)\s*(\d+(?:\.\d+)?\s*(?:MG|G|ML|IU))?.*$', re.IGNORECASE)
+    drug_pattern = re.compile(r'^-\s*([A-Z0-9\s+\/\-\.\&]+)\b.*$', re.IGNORECASE)
 
     raw_parsed_protocols = []
     quarantined_logs = []
@@ -246,12 +293,10 @@ def clean_and_validate():
         
         raw_name = block["raw_name"]
         
-        # Dosage separation
-        dosage_sep_match = re.search(r'\s+(\d+(?:\.\d+)?\s*(?:MG|G|ML|IU))$', raw_name)
-        if dosage_sep_match:
-            raw_name = raw_name[:dosage_sep_match.start()].strip()
+        # Strip all dosage values from the raw name (e.g. 500mg, 125mg, 1.5g) to get a clean name
+        cleaned_name = re.sub(r'\b\d+(?:\.\d+)?\s*(?:MG|G|ML|IU)\b', '', raw_name, flags=re.IGNORECASE).strip()
             
-        words = raw_name.split()
+        words = cleaned_name.split()
         cleaned_words = [w for w in words if w not in helpers]
         candidate_name = " ".join(cleaned_words)
         
@@ -349,13 +394,17 @@ def clean_and_validate():
             if active_block:
                 process_block(active_block)
             
-            raw_name = drug_match.group(1).strip().upper()
-            dose_val_str = drug_match.group(2)
+            # The entire matched line content after the bullet
+            raw_line_content = drug_match.group(1).strip()
+            
+            # Search for the first dosage in the line
+            dose_match = re.search(r'(\d+(?:\.\d+)?\s*(?:MG|G|ML|IU))', raw_line_content, re.IGNORECASE)
+            dose_val_str = dose_match.group(1) if dose_match else None
             
             # Format the citation string
             citation = f"Chapter {current_chapter_num or 0}, Page {page_num}"
             active_block = {
-                "raw_name": raw_name,
+                "raw_name": raw_line_content,
                 "dose_from_line": dose_val_str,
                 "first_line": line_str,
                 "lines": [line_str],

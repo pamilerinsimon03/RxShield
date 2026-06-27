@@ -327,17 +327,17 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
       };
 
       try {
-        // Race the Cloud Track against a generous 30000ms timeout for testing
+        // Race the Cloud Track against a short 3000ms timeout for high responsiveness
         const cloudResultText = await Promise.race([
           runCloudTrack(),
           new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Cloud API request timed out (30000ms limit reached).')), 30000)
+            setTimeout(() => reject(new Error('Cloud API request timed out (3000ms limit reached).')), 3000)
           ),
         ]);
 
         return { text: cloudResultText, source: 'cloud' };
       } catch (err) {
-        appendLog(`[Orchestrator] Cloud Track failed/timed out: ${err instanceof Error ? err.message : String(err)}`);
+        appendLog(`[Orchestrator] Cloud Track failed or exceeded cap: ${err instanceof Error ? err.message : String(err)}`);
         appendLog('[Orchestrator] Falling back immediately to Local WASM result.');
         const localText = await localPromise;
         return { text: localText, source: 'local' };

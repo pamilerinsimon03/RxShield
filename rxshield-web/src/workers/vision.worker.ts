@@ -973,28 +973,9 @@ const api = {
         }
       };
 
-      // Pre-evaluate matched drug
+      // 1. Run inference on all segments and cache the results
+      const inferenceCache: Array<{ wordL: string; wordS: string }> = [];
       let preMatchedGeneric: string | null = null;
-      for (const box of wordBoxes) {
-        const subBuffer = extractSubImage(binarizedBuffer, width, box);
-        
-        const wordL = (await runInferenceOnSegment(subBuffer, box, preprocessLetterbox)).replace(/\s+/g, '');
-        const matchRes = matchDrugNameOnly(wordL);
-        if (matchRes.matched && matchRes.name) {
-          preMatchedGeneric = matchRes.name;
-          break;
-        }
-        
-        const wordS = (await runInferenceOnSegment(subBuffer, box, preprocessStretched)).replace(/\s+/g, '');
-        const matchResS = matchDrugNameOnly(wordS);
-        if (matchResS.matched && matchResS.name) {
-          preMatchedGeneric = matchResS.name;
-          break;
-        }
-      }
-      console.log(`[OCR] Pre-matched drug: ${preMatchedGeneric || 'None'}`);
-
-      const decodedWords: string[] = [];
 
       for (let i = 0; i < wordBoxes.length; i++) {
         const box = wordBoxes[i];
@@ -1002,7 +983,30 @@ const api = {
         
         const wordL = await runInferenceOnSegment(subBuffer, box, preprocessLetterbox);
         const wordS = await runInferenceOnSegment(subBuffer, box, preprocessStretched);
+        
+        inferenceCache.push({ wordL, wordS });
 
+        // Pre-evaluate matched drug on the fly using cached results
+        if (!preMatchedGeneric) {
+          const matchResL = matchDrugNameOnly(wordL.replace(/\s+/g, ''));
+          if (matchResL.matched && matchResL.name) {
+            preMatchedGeneric = matchResL.name;
+          } else {
+            const matchResS = matchDrugNameOnly(wordS.replace(/\s+/g, ''));
+            if (matchResS.matched && matchResS.name) {
+              preMatchedGeneric = matchResS.name;
+            }
+          }
+        }
+      }
+
+      console.log(`[OCR] Pre-matched drug: ${preMatchedGeneric || 'None'}`);
+
+      // 2. Select candidates using the cached results
+      const decodedWords: string[] = [];
+
+      for (let i = 0; i < wordBoxes.length; i++) {
+        const { wordL, wordS } = inferenceCache[i];
         const selectedWord = await selectBestOcrCandidate(wordL, wordS, preMatchedGeneric);
         if (selectedWord.trim()) {
           console.log(`[OCR] Word ${i + 1}: L="${wordL.trim()}", S="${wordS.trim()}" -> Selected="${selectedWord.trim()}"`);

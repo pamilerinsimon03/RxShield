@@ -141,7 +141,8 @@ def compile_database():
     """)
 
     print("Step 4: Setting up composite indices...")
-    cursor.execute("CREATE UNIQUE INDEX idx_drugs_lookup ON drugs (brand_name, generic_name);")
+    cursor.execute("CREATE INDEX idx_drugs_brand ON drugs (brand_name);")
+    cursor.execute("CREATE INDEX idx_drugs_generic ON drugs (generic_name);")
     cursor.execute("CREATE INDEX idx_interactions_lookup ON drug_interactions (atc_code_a, atc_code_b);")
 
     print("\nStep 5: Populating 'drugs' table...")

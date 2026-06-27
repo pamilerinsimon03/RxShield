@@ -232,16 +232,25 @@ const api = {
 
         db = new sqlite3.oo1.DB();
         const p = sqlite3.wasm.allocFromTypedArray(arrayBuffer);
-        const rc = sqlite3.capi.sqlite3_deserialize(
-          db.pointer,
-          'main',
-          p,
-          arrayBuffer.byteLength,
-          arrayBuffer.byteLength,
-          sqlite3.capi.SQLITE_DESERIALIZE_FREEONCLOSE
-        );
-        db.checkRc(rc);
-        console.log('In-memory database seeded successfully.');
+        try {
+          const rc = sqlite3.capi.sqlite3_deserialize(
+            db.pointer,
+            'main',
+            p,
+            arrayBuffer.byteLength,
+            arrayBuffer.byteLength,
+            sqlite3.capi.SQLITE_DESERIALIZE_FREEONCLOSE
+          );
+          db.checkRc(rc);
+          console.log('In-memory database seeded successfully.');
+        } catch (err) {
+          try {
+            sqlite3.wasm.dealloc(p);
+          } catch (deallocErr) {
+            console.error('Failed to deallocate pointer on error:', deallocErr);
+          }
+          throw err;
+        }
       }
 
       if (db) {
