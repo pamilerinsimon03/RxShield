@@ -116,6 +116,9 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
           setValidationData(response.data);
           break;
         case 'COMPLETE':
+          if (response.data && response.data.reset) {
+            break;
+          }
           setPhase('COMPLETE');
           setFinalVerdict(response.data);
           setIsProcessing(false);
@@ -157,6 +160,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
   const runMockInference = () => {
     resetWorkflow();
     setIsProcessing(true);
+    setPhase('EXTRACTION');
     setLogs(['Initiating simulated inference pipeline...']);
     if (workerClientRef.current) {
       workerClientRef.current.send({
@@ -386,6 +390,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
   const triggerCrash = () => {
     resetWorkflow();
     setIsProcessing(true);
+    setPhase('EXTRACTION');
     setLogs(['Triggering simulated Web Worker execution fault...']);
     if (workerClientRef.current) {
       workerClientRef.current.send({
@@ -424,6 +429,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
   const simulatePipelineMock = (scenario: 'SCENARIO_A' | 'SCENARIO_B' | 'SCENARIO_C') => {
     resetWorkflow();
     setIsProcessing(true);
+    setPhase('EXTRACTION');
     setLogs([`Triggering Pitch Simulation: ${scenario}...`]);
     
     let mockText = '';

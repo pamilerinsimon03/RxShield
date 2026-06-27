@@ -10,7 +10,7 @@
 | `Amoxil 2gm Daily` | `Amoxil 2gm Daily` | `AMOXIL 2gm Daily` | `AMOXIL` | **PASS**: *Dosage Matches NSTG Guidelines. No Known Interactions.* | ✅ SUCCESS |
 | `Amoxil 500mg TDS` | `Amoxil 500mg TDS` | `AMOXIL 500mg TDS` | `AMOXIL` | **PASS**: *Dosage Matches NSTG Guidelines. No Known Interactions.* | ✅ SUCCESS |
 | `Amoxil 500mg` | `Amoxil 500mg` | `AMOXIL 500mg` | `AMOXIL` | **PASS**: *Dosage Matches NSTG Guidelines. No Known Interactions.* | ✅ SUCCESS |
-| `Anugmontin 625` | `Anugmontin 625 ` | `AUGMENTIN 625` | `AUGMENTIN` | **PASS**: *Dosage Matches NSTG Guidelines. No Known Interactions.* | ✅ SUCCESS |
+| `Anugmontin 625` | `Anugmontin 625` | `AUGMENTIN 625` | `AUGMENTIN` | **PASS**: *Dosage Matches NSTG Guidelines. No Known Interactions.* | ✅ SUCCESS |
 | `Azathioprine 50mg Daily` | `Azathioprine 50mg Daily` | `AZATHIOPRINE 50mg Daily` | `AZATHIOPRINE` | **DANGER**: *Daily dose (50mg) exceeds maximum guideline limit (3mg) for AZATHIOPRINE.* | ✅ SUCCESS |
 | `Azathioprine 50mg` | `Azathioprine 50mg` | `AZATHIOPRINE 50mg` | `AZATHIOPRINE` | **DANGER**: *Daily dose (50mg) exceeds maximum guideline limit (3mg) for AZATHIOPRINE.* | ✅ SUCCESS |
 | `Clarithromycin` | `Clarithromycin` | `CLARITHROMYCIN` | `CLARITHROMYCIN` | **PASS**: *Dosage Matches NSTG Guidelines. No Known Interactions.* | ✅ SUCCESS |
