@@ -144,53 +144,9 @@ const resolveLineDisagreement = async (
     finalFrequency = cloudParts.frequency || localParts.frequency;
   }
 
-  // Resolve Dosage (Disagreement Decision Tree)
+  // Resolve Dosage (Cloud VLM always overrides Local dosage when online)
   if (localParts.dosage && cloudParts.dosage) {
-    if (localParts.dosage.toLowerCase() !== cloudParts.dosage.toLowerCase()) {
-      // Dosage Dispute! Check SQLite safety limits first to prioritize clinical safety warnings.
-      const matchedData = (cloudMatch?.matched ? cloudMatch.data : null) || 
-                          (localMatch?.matched ? localMatch.data : null);
-
-      if (matchedData && matchedData.max_daily_dose_mg > 0) {
-        // Parse frequency value to compute daily exposure
-        let freqMultiplier = 1;
-        const freqLower = finalFrequency.toLowerCase();
-        if (['bd', 'bid', 'twice', 'bl', 'b1', 'bo', 'bd5', 'rfy', '8l'].includes(freqLower)) {
-          freqMultiplier = 2;
-        } else if (['tds', 'tid', 'three', 'td5', 't18', 'tds5', 'td', 'tles', 'te', 't5'].includes(freqLower)) {
-          freqMultiplier = 3;
-        } else if (['qds', 'qid', 'four', 'qd5'].includes(freqLower)) {
-          freqMultiplier = 4;
-        }
-
-        const localNumMatch = localParts.dosage.match(/(\d+(?:\.\d+)?)/);
-        const cloudNumMatch = cloudParts.dosage.match(/(\d+(?:\.\d+)?)/);
-        const localDoseMg = localNumMatch ? parseFloat(localNumMatch[1]) : 0;
-        const cloudDoseMg = cloudNumMatch ? parseFloat(cloudNumMatch[1]) : 0;
-
-        const localDaily = localDoseMg * freqMultiplier;
-        const cloudDaily = cloudDoseMg * freqMultiplier;
-
-        const localOverdose = localDaily > matchedData.max_daily_dose_mg;
-        const cloudOverdose = cloudDaily > matchedData.max_daily_dose_mg;
-
-        if (localOverdose && !cloudOverdose) {
-          // Local exceeds limit (potential doctor error/OCR error). Select it so the warning shows.
-          finalDosage = localParts.dosage;
-        } else if (cloudOverdose && !localOverdose) {
-          // Cloud exceeds limit. Select it so the warning shows.
-          finalDosage = cloudParts.dosage;
-        } else {
-          // Neither or both exceed limit -> Default to Cloud VLM's superior layout recognition
-          finalDosage = cloudParts.dosage;
-        }
-      } else {
-        // No SQLite limits available -> Default to Cloud
-        finalDosage = cloudParts.dosage;
-      }
-    } else {
-      finalDosage = cloudParts.dosage;
-    }
+    finalDosage = cloudParts.dosage;
   } else {
     finalDosage = cloudParts.dosage || localParts.dosage;
   }
@@ -235,7 +191,8 @@ export const useHybridPrescriptionParser = ({ ocrServiceRef, appendLog, matchDru
       rgbaBuffer: Uint8ClampedArray,
       width: number,
       height: number,
-      scanMode: 'line' | 'block' = 'line'
+      scanMode: 'line' | 'block' = 'line',
+      onRefined?: (result: HybridParseResult) => void
     ): Promise<HybridParseResult> => {
       // 1. Instantly check connectivity
       appendLog('[Orchestrator] Probing connection speed and reachability...');
@@ -493,28 +450,31 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
 
       const localText = await localPromise;
 
-      let cloudResultText = '';
-      try {
-        // Race the Cloud Track against a short 3000ms timeout for high responsiveness
-        cloudResultText = await Promise.race([
-          runCloudTrack(),
-          new Promise<string>((_, reject) =>
-            setTimeout(() => reject(new Error('Cloud API request timed out (3000ms limit reached).')), 3000)
-          ),
-        ]);
-      } catch (err) {
-        appendLog(`[Orchestrator] Cloud Track failed or timed out: ${err instanceof Error ? err.message : String(err)}`);
+      if (isOnline && onRefined) {
+        // Run the Cloud track asynchronously in the background so scan-to-result is instantaneous (~150ms)
+        (async () => {
+          try {
+            const cloudResultText = await Promise.race([
+              runCloudTrack(),
+              new Promise<string>((_, reject) =>
+                setTimeout(() => reject(new Error('Cloud API request timed out (4000ms limit reached).')), 4000)
+              ),
+            ]);
+
+            if (cloudResultText) {
+              appendLog('[Orchestrator] Cloud background refinement received. Merging tracks...');
+              const mergedText = await resolveHybridLines(localText, cloudResultText, matchDrug);
+              appendLog(`[Orchestrator] Resolved hybrid refined text: "${mergedText.replace(/\n/g, ' | ')}"`);
+              onRefined({ text: mergedText, source: 'cloud' });
+            }
+          } catch (err) {
+            appendLog(`[Orchestrator] Cloud background refinement failed or timed out: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        })();
       }
 
-      if (cloudResultText) {
-        appendLog('[Orchestrator] Merging local and cloud tracks via decision engine...');
-        const mergedText = await resolveHybridLines(localText, cloudResultText, matchDrug);
-        appendLog(`[Orchestrator] Resolved hybrid text: "${mergedText.replace(/\n/g, ' | ')}"`);
-        return { text: mergedText, source: 'cloud' };
-      } else {
-        appendLog('[Orchestrator] Cloud track unavailable or timed out. Using local track.');
-        return { text: localText, source: 'local' };
-      }
+      appendLog('[Orchestrator] Returning local OCR result instantly to user.');
+      return { text: localText, source: 'local' };
     },
     [ocrServiceRef, appendLog, matchDrug]
   );

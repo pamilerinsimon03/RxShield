@@ -190,17 +190,10 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
     setLogs((prev) => [...prev, `[App] Starting hybrid OCR parser on frame ${width}x${height}...`]);
     setPhase('EXTRACTION');
 
-    try {
-      if (!ocrServiceRef.current) {
-        ocrServiceRef.current = new OcrService();
-      }
-
-      const parseResult = await parsePrescription(rgbaBuffer, width, height, scanMode);
-      const text = parseResult.text || '';
-      
+    const evaluateExtractionResult = async (text: string, source: 'local' | 'cloud') => {
       setLogs((prev) => [
         ...prev,
-        `[App] Character extraction complete (Source: ${parseResult.source.toUpperCase()}): "${text.replace(/\n/g, ' | ')}"`
+        `[App] Character extraction complete (Source: ${source.toUpperCase()}): "${text.replace(/\n/g, ' | ')}"`
       ]);
 
       const tokens = text.split(/\s+/).filter(Boolean);
@@ -379,6 +372,17 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
         citation
       });
       setIsProcessing(false);
+    };
+
+    try {
+      if (!ocrServiceRef.current) {
+        ocrServiceRef.current = new OcrService();
+      }
+
+      const parseResult = await parsePrescription(rgbaBuffer, width, height, scanMode, (res) => {
+        evaluateExtractionResult(res.text, res.source);
+      });
+      await evaluateExtractionResult(parseResult.text, parseResult.source);
 
     } catch (err) {
       console.error('[App] Real-world pipeline failed:', err);

@@ -4,7 +4,7 @@
 
 RxShield is a hybrid, offline-first, mobile-optimized Progressive Web App (PWA) designed to intercept medication prescription errors at the point of dispensing in understaffed, power-unstable clinical settings (such as rural Nigerian hospitals).
 
-By default, the application runs a resilient, parallel-track orchestrator that races a cloud OCR track for maximum accuracy against an on-device WebAssembly (WASM) computer vision pipeline. When offline or under unstable network conditions, it falls back instantly to the local vision worker and its highly compressed, localized SQLite clinical rule engine. This allows frontline pharmacists and nurses to capture an image of a handwritten prescription, instantly extract drug names and dosages, and evaluate them against the official **Nigeria Standard Treatment Guidelines (NSTG)** and drug-drug interaction tables—completely without internet access or cloud server dependencies.
+By default, the application runs a safety-first hybrid orchestrator that executes a local WebAssembly (WASM) computer vision pipeline as the instant default track. When online, the local result is cross-referenced in the background with a Cloud VLM. If they differ, the engine resolves the conflict using a strict clinical safety logic: it adopts the Cloud VLM's context for drug name refinements, but prioritizes displaying the over-limit candidate if *either* model detects an overdose. This ensures that potentially lethal prescribing errors are highlighted in the UI rather than being silently auto-corrected. If the user is offline, the local WASM model serves as the sole extraction source, providing complete resilience in remote environments.
 
 ---
 
@@ -12,7 +12,7 @@ By default, the application runs a resilient, parallel-track orchestrator that r
 
 1. **Zero-Connectivity Clinical Safety:** 100% local operation with no external API calls, servers, or database connections required after the initial load.
 2. **Sub-Second Execution Matrix:** Consistently achieves a processing latency of **under 500ms** (typically ~350ms) from image shutter click to clinical alert rendering on mid-to-low-tier client devices.
-3. **Resilient Parallel Race Orchestrator**: Races cloud OCR tracks against a tight `3000ms` defensive timeout. Under flaky or offline network profiles, the UI bypasses slow cloud pings instantly, falling back to local WASM OCR.
+3. **Hybrid Local-Cloud Orchestration (Safety-First Dispute Resolution):** Executes both tracks in parallel, displaying the local WASM OCR instantly. If the Cloud VLM responds within 3 seconds, a decision tree resolves disputes by adopting the Cloud VLM for drug names, but prioritizing any overdose/lethal dose reading (local or cloud) to force a high-priority UI warning.
 4. **Radical Data Compression:** Condenses global clinical datasets (10M+ OpenFDA entries) and localized medical guidelines (500+ pages of NSTG protocols) into a highly optimized SQLite database under **350KB** (well below the 25MB design ceiling).
 5. **Zero Alert Fatigue Triage:** Utilizes a deterministic visual triage system that only interrupts clinicians when high-risk contraindications or severe drug-drug interactions are found:
    - **Tier 1 (Instant Pass - Green):** Dosage matches guidelines; no interactions.
