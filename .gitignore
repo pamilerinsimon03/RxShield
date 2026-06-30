@@ -57,6 +57,7 @@ rxshield-web/public/models/crnn_int8.onnx
 rxshield-pipeline/crnn_int8.onnx
 rxshield-pipeline/crnn.onnx
 rxshield-pipeline/best_model.pth
+rxshield-pipeline/best_model_tuned.pth
 
 # ONNX Runtime WASM Binaries
 rxshield-web/public/wasm/ort-wasm-simd-threaded*
@@ -68,3 +69,5 @@ rxshield-web/public/wasm/ort-wasm-simd-threaded*
 !rxshield-web/public/models/crnn_int8.onnx
 
 rxshield-web/public/test-crops/*
+rxshield-web/public/synthetic-test-images/*
+rxshield-web/public/test-handwritten-images/*

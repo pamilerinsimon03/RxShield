@@ -49,6 +49,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
   const { parsePrescription } = useHybridPrescriptionParser({
     ocrServiceRef,
     appendLog: (log: string) => setLogs((prev) => [...prev, log]),
+    matchDrug
   });
 
   useEffect(() => {
@@ -291,7 +292,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
             ['bd', 'bid', 'twice', 'bl', 'b1', 'bo', 'bd5', 'rfy', '8l'].includes(w)
           );
           const hasTDS = lineWords.some((w) =>
-            ['tds', 'tid', 'three', 'td5', 't18', 'tds5', 'td', 'tles'].includes(w)
+            ['tds', 'tid', 'three', 'td5', 't18', 'tds5', 'td', 'tles', 'te', 't5'].includes(w)
           );
           const hasQDS = lineWords.some((w) => ['qds', 'qid', 'four', 'qd5'].includes(w));
 

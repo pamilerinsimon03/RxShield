@@ -17,7 +17,7 @@ const CHARS = [
   "7", "8", "9", ":", ";", "?", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", 
   "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "a", "b", 
   "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", 
-  "t", "u", "v", "w", "x", "y", "z"
+  "t", "u", "v", "w", "x", "y", "z", "/", "+"
 ];
 
 // Memory-cached drug data from DB passed from main thread
@@ -35,6 +35,7 @@ const VISUAL_MAPS: Record<string, string[]> = {
   '0': ['0'], '1': ['1'], '2': ['2'], '3': ['3'], '4': ['4'],
   '5': ['5'], '6': ['6'], '7': ['7'], '8': ['8', '5'], '9': ['9', '0'],
   'B': ['5', '6', '8'],
+  'C': ['0', '5', '6'],
   'S': ['5'],
   'A': ['2'], 'Z': ['2'], 'R': ['2'], 'T': ['2', '7'],
   'I': ['1', '7'],
@@ -69,8 +70,8 @@ const areFirstLettersVisuallyEquivalent = (c1: string, c2: string): boolean => {
   
   const groups = [
     ['I', 'L', 'J', 'F', 'T', '1', '7'],
-    ['O', 'D', 'Q', '0', 'C', 'K'],
-    ['S', '5', '8', 'B'],
+    ['O', 'D', 'Q', '0', 'C', 'K', 'G'],
+    ['S', '5', '8', 'B', 'E', 'C', 'G'],
     ['A', '2', 'Z', 'R'],
     ['M', 'W', '3', 'N', 'H'],
     ['U', 'V', 'Y', '4'],
@@ -540,8 +541,8 @@ const EXCLUDED_TOKENS = new Set([
 ]);
 
 const FREQ_NORM_MAPS: Record<string, string[]> = {
-  'bd': ['bd', 'bid', 'twice', 'bl', 'b1', 'bo', 'bd5', 'rfy', '8l'],
-  'tds': ['tds', 'tid', 'three', 'td5', 't18', 'tds5', 'td', 'tles'],
+  'bd': ['bd', 'bid', 'twice', 'b1', 'bd5', 'rfy', '8l'],
+  'tds': ['tds', 'tid', 'three', 'td5', 't18', 'tds5', 'td', 'tles', 'te', 't5'],
   'qds': ['qds', 'qid', 'four', 'qd5'],
   'daily': ['daily', 'waily', 'darly', 'tils', 'warly']
 };
@@ -731,6 +732,20 @@ const getCandidatePriority = (
   return { priority: 0, val: null };
 };
 
+const getBestFuzzyScore = (word: string): number => {
+  const cleaned = word.toUpperCase().replace(/[^A-Z0-9\s,\/\.\-]/g, '').replace(/\s+/g, ' ').trim();
+  if (!cleaned || cleaned.length < 3) return 0;
+  
+  let bestScore = 0;
+  for (const candidate of ALL_DRUG_NAMES) {
+    const score = getFuzzySimilarity(cleaned, candidate);
+    if (score > bestScore) {
+      bestScore = score;
+    }
+  }
+  return bestScore;
+};
+
 const selectBestOcrCandidate = async (
   wordL: string,
   wordS: string,
@@ -747,6 +762,11 @@ const selectBestOcrCandidate = async (
   const pS = getCandidatePriority(ws, previousMatchedDrug);
   
   if (pL.priority !== pS.priority) {
+    if ((pL.priority === 3 && pS.priority === 2) || (pL.priority === 2 && pS.priority === 3)) {
+      const doseToken = pL.priority === 2 ? wl : ws;
+      const freqToken = pL.priority === 3 ? wl : ws;
+      return `${doseToken} ${freqToken}`;
+    }
     return pL.priority > pS.priority ? wl : ws;
   }
   
@@ -773,6 +793,16 @@ const selectBestOcrCandidate = async (
     return pL.val.score <= pS.val.score ? wl : ws;
   }
   
+  // If both are unrecognized (priority 0), select the one that looks more like a drug name
+  if (pL.priority === 0) {
+    const scoreL = getBestFuzzyScore(wl);
+    const scoreS = getBestFuzzyScore(ws);
+    if (Math.abs(scoreL - scoreS) >= 0.03) {
+      return scoreL > scoreS ? wl : ws;
+    }
+  }
+  
+  // Default fallback: return the shorter one
   return wl.length <= ws.length ? wl : ws;
 };
 
@@ -847,18 +877,27 @@ const preprocessLetterbox = (
 ): Float32Array => {
   const output = new Float32Array(destW * destH);
   output.fill(1.0);
+  
   const scale = Math.min(destW / width, destH / height);
   const newW = Math.floor(width * scale);
   const newH = Math.floor(height * scale);
-  const dx = Math.floor((destW - newW) / 2);
-  const dy = Math.floor((destH - newH) / 2);
+  
+  // Continuous smooth aspect ratio widening to prevent CTC sequence-length collapse
+  const adaptiveW = Math.floor(destW * (0.5 + 0.5 * (newW / destW)));
+  const adaptiveH = newH;
+  
+  const dx = Math.floor((destW - adaptiveW) / 2);
+  const dy = Math.floor((destH - adaptiveH) / 2);
+  
+  const scaleX = adaptiveW / width;
+  const scaleY = adaptiveH / height;
 
-  for (let y = 0; y < newH; y++) {
+  for (let y = 0; y < adaptiveH; y++) {
     const destY = dy + y;
-    const srcY = Math.min(height - 1, Math.floor(y / scale));
-    for (let x = 0; x < newW; x++) {
+    const srcY = Math.min(height - 1, Math.floor(y / scaleY));
+    for (let x = 0; x < adaptiveW; x++) {
       const destX = dx + x;
-      const srcX = Math.min(width - 1, Math.floor(x / scale));
+      const srcX = Math.min(width - 1, Math.floor(x / scaleX));
       const srcIdx = (srcY * width + srcX) * 4;
       const r = rgbaBuffer[srcIdx];
       const g = rgbaBuffer[srcIdx + 1];
@@ -976,6 +1015,7 @@ const api = {
       // 1. Run inference on all segments and cache the results
       const inferenceCache: Array<{ wordL: string; wordS: string }> = [];
       let preMatchedGeneric: string | null = null;
+      let highestConfidence = 0;
 
       for (let i = 0; i < wordBoxes.length; i++) {
         const box = wordBoxes[i];
@@ -987,16 +1027,15 @@ const api = {
         inferenceCache.push({ wordL, wordS });
 
         // Pre-evaluate matched drug on the fly using cached results
-        if (!preMatchedGeneric) {
-          const matchResL = matchDrugNameOnly(wordL.replace(/\s+/g, ''));
-          if (matchResL.matched && matchResL.name) {
-            preMatchedGeneric = matchResL.name;
-          } else {
-            const matchResS = matchDrugNameOnly(wordS.replace(/\s+/g, ''));
-            if (matchResS.matched && matchResS.name) {
-              preMatchedGeneric = matchResS.name;
-            }
-          }
+        const matchResL = matchDrugNameOnly(wordL.replace(/\s+/g, ''));
+        if (matchResL.matched && matchResL.name && matchResL.confidence > highestConfidence) {
+          highestConfidence = matchResL.confidence;
+          preMatchedGeneric = matchResL.name;
+        }
+        const matchResS = matchDrugNameOnly(wordS.replace(/\s+/g, ''));
+        if (matchResS.matched && matchResS.name && matchResS.confidence > highestConfidence) {
+          highestConfidence = matchResS.confidence;
+          preMatchedGeneric = matchResS.name;
         }
       }
 

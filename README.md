@@ -2,7 +2,7 @@
 
 **Live Deployment:** [rx-shield-phi.vercel.app](https://rx-shield-phi.vercel.app/)
 
-RxShield is a hybrid, offline-first, mobile-optimized Progressive Web App (PWA) designed to intercept medication prescription errors at the point of dispensing in understaffed, power-unstable clinical settings (such as rural Nigerian hospitals). 
+RxShield is a hybrid, offline-first, mobile-optimized Progressive Web App (PWA) designed to intercept medication prescription errors at the point of dispensing in understaffed, power-unstable clinical settings (such as rural Nigerian hospitals).
 
 By default, the application runs a resilient, parallel-track orchestrator that races a cloud OCR track for maximum accuracy against an on-device WebAssembly (WASM) computer vision pipeline. When offline or under unstable network conditions, it falls back instantly to the local vision worker and its highly compressed, localized SQLite clinical rule engine. This allows frontline pharmacists and nurses to capture an image of a handwritten prescription, instantly extract drug names and dosages, and evaluate them against the official **Nigeria Standard Treatment Guidelines (NSTG)** and drug-drug interaction tables—completely without internet access or cloud server dependencies.
 
@@ -37,7 +37,7 @@ The workspace enforces strict structural boundaries to prevent dependency leakag
 
 ## 3. Directory Layout
 
-```
+```markdown
 RxShield/
 ├── .agents/                    # Developer agent configs & rules
 ├── rxshield-pipeline/          # Python data processing & ML compilation pipeline
@@ -72,6 +72,7 @@ The data pipeline consumes raw medical guidelines, Excel EML lists, and API data
 ### Setup and Ingestion
 
 1. **Initialize the Virtual Environment:**
+
    ```bash
    cd rxshield-pipeline
    python -m venv .venv
@@ -80,10 +81,13 @@ The data pipeline consumes raw medical guidelines, Excel EML lists, and API data
    # Activate on macOS/Linux:
    source .venv/bin/activate
    ```
+
 2. **Install Dependencies:**
+
    ```bash
    pip install -r requirements.txt
    ```
+
 3. **Place Seed Data:**
    Ensure your raw source datasets are available under `data/raw/` (e.g., `eml_export.xlsx` and `Nigeria Standard Treatment Guidelines 2022.pdf`).
 
@@ -107,8 +111,14 @@ python scripts/04_clean_and_validate_protocols.py
 # 5. Compile processed CSV files into SQLite database
 python scripts/05_compile_sqlite.py
 
-# 6. Quantize PyTorch model weights to INT8 and compile ONNX binary
-python scripts/06_export_edge_vision_model.py
+# 6. Generate synthetic handwriting crop dataset for training
+python scripts/06_generate_synthetic_rx.py
+
+# 7. Train the CRNN sequence recognition model
+python scripts/07_train_model.py
+
+# 8. Quantize PyTorch model weights to INT8 and compile ONNX binary
+python scripts/08_export_edge_vision_model.py
 ```
 
 *Note: Scripts 02 and 03 include built-in offline fallbacks that automatically reuse existing local csv and text files if internet access or Tesseract OCR is unavailable on the compilation machine.*
@@ -126,14 +136,18 @@ The frontend application runs entirely inside the client's browser, utilizing mu
 1. **Ensure pnpm is Installed:**
    This project uses `pnpm` to manage node packages.
 2. **Install Web Dependencies:**
+
    ```bash
    cd rxshield-web
    pnpm install
    ```
+
 3. **Run the Development Server:**
+
    ```bash
    pnpm run dev
    ```
+
    Open `http://localhost:3000` to view the application in the browser.
 
 ### Multi-Threading & WASM Runtime Architecture
@@ -154,14 +168,18 @@ To avoid main-thread UI lag and browser thermal throttling:
 The local relational schema is optimized with separate indexing to prevent table scans:
 
 ### `drugs`
+
 Maps local brand nomenclature to generic identifiers.
+
 - `id` (INTEGER, PRIMARY KEY AUTOINCREMENT)
 - `brand_name` (TEXT) - *Indexed via `idx_drugs_brand`*
 - `generic_name` (TEXT) - *Indexed via `idx_drugs_generic`*
 - `atc_code` (TEXT)
 
 ### `nstg_protocols`
+
 Dosage thresholds, treatment duration, and demographic checking rules translated from Nigeria Standard Treatment Guidelines.
+
 - `id` (INTEGER, PRIMARY KEY AUTOINCREMENT)
 - `generic_name` (TEXT, UNIQUE)
 - `max_single_dose_mg` (REAL)
@@ -172,7 +190,9 @@ Dosage thresholds, treatment duration, and demographic checking rules translated
 - `guideline_citation` (TEXT)
 
 ### `drug_interactions`
+
 The adverse interaction combinations matrix compiled from openFDA logs.
+
 - `id` (INTEGER, PRIMARY KEY AUTOINCREMENT)
 - `atc_code_a` (TEXT) - *Indexed via `idx_interactions_lookup`*
 - `atc_code_b` (TEXT) - *Indexed via `idx_interactions_lookup`*
@@ -184,14 +204,18 @@ The adverse interaction combinations matrix compiled from openFDA logs.
 ## 7. Edge Deployment & HTTP Headers Policy
 
 Because the application loads multi-threaded WebAssembly in the browser (via SQLite WASM and ONNX Web WASM), modern browsers require strict security headers:
+
 - **Cross-Origin Opener Policy (COOP):** `same-origin`
 - **Cross-Origin Embedder Policy (COEP):** `require-corp`
 
 ### Production Compilation
+
 Static export is used for edge hosting:
+
 ```bash
 pnpm run build
 ```
+
 This exports the static files into `rxshield-web/out/`. The build size is verified under the **45MB** hard ceiling (typically ~41MB, including database and models), with 98 static assets automatically injected for service worker precaching.
 
 ### Hosting Configurations
@@ -199,6 +223,7 @@ This exports the static files into `rxshield-web/out/`. The build size is verifi
 Ensure your static host is configured to serve the required headers:
 
 #### Vercel (`vercel.json`)
+
 ```json
 {
   "headers": [
@@ -220,7 +245,9 @@ Ensure your static host is configured to serve the required headers:
 ```
 
 #### Cloudflare Pages (`_headers`)
+
 Create a `_headers` file in `public/` (copied to `out/`):
+
 ```text
 /*
   Cross-Origin-Opener-Policy: same-origin
@@ -228,6 +255,7 @@ Create a `_headers` file in `public/` (copied to `out/`):
 ```
 
 #### Netlify (`netlify.toml`)
+
 ```toml
 [[headers]]
   for = "/*"
@@ -237,6 +265,7 @@ Create a `_headers` file in `public/` (copied to `out/`):
 ```
 
 For custom web servers like **Nginx**, add the headers directly to the server block in your `nginx.conf`:
+
 ```nginx
 add_header Cross-Origin-Opener-Policy "same-origin";
 add_header Cross-Origin-Embedder-Policy "require-corp";

@@ -4,6 +4,7 @@ import { OcrService } from '@/services/ocrService';
 interface ParserOptions {
   ocrServiceRef: React.MutableRefObject<OcrService | null>;
   appendLog: (log: string) => void;
+  matchDrug?: (text: string) => Promise<any>;
 }
 
 export interface HybridParseResult {
@@ -64,7 +65,171 @@ const convertRgbaToBase64 = (
   return dataUrl.split(',')[1];
 };
 
-export const useHybridPrescriptionParser = ({ ocrServiceRef, appendLog }: ParserOptions) => {
+const parseLineComponents = (line: string): { medication: string; dosage: string; frequency: string } => {
+  const tokens = line.split(/\s+/).filter(Boolean);
+  let dosage = '';
+  let frequency = '';
+  const medTokens: string[] = [];
+
+  for (const token of tokens) {
+    const lower = token.toLowerCase();
+    
+    // Check if it matches a frequency pattern
+    const isFreq = ['bd', 'bid', 'twice', 'bl', 'b1', 'bo', 'bd5', 'rfy', '8l',
+                    'tds', 'tid', 'three', 'td5', 't18', 'tds5', 'td', 'tles', 'te', 't5',
+                    'qds', 'qid', 'four', 'qd5',
+                    'daily', 'waily', 'darly', 'tils', 'warly', 'om', 'nocte', 'mane'].includes(lower);
+                    
+    // Check if it matches a dosage pattern (starts with a digit or ends with mg/g/gm/ml)
+    const isDose = /^\d+(?:\.\d+)?\s*(?:mg|g|gm|ml)?$/i.test(token) || 
+                   /^\d+(?:\.\d+)?$/i.test(token) ||
+                   /^(?:mg|g|gm|ml)$/i.test(token);
+
+    if (isFreq) {
+      frequency = token;
+    } else if (isDose && !dosage) {
+      dosage = token;
+    } else {
+      medTokens.push(token);
+    }
+  }
+
+  return {
+    medication: medTokens.join(' '),
+    dosage,
+    frequency
+  };
+};
+
+const resolveLineDisagreement = async (
+  localLine: string,
+  cloudLine: string,
+  matchDrug?: (text: string) => Promise<any>
+): Promise<string> => {
+  if (localLine.trim().toLowerCase() === cloudLine.trim().toLowerCase()) {
+    return localLine;
+  }
+
+  const localParts = parseLineComponents(localLine);
+  const cloudParts = parseLineComponents(cloudLine);
+
+  let finalMedication = localParts.medication;
+  let finalDosage = localParts.dosage;
+  let finalFrequency = localParts.frequency;
+
+  let localMatch: any = null;
+  let cloudMatch: any = null;
+
+  if (matchDrug) {
+    localMatch = await matchDrug(localParts.medication || '');
+    cloudMatch = await matchDrug(cloudParts.medication || '');
+
+    if (localMatch.matched && cloudMatch.matched) {
+      finalMedication = cloudParts.medication;
+    } else if (localMatch.matched && !cloudMatch.matched) {
+      finalMedication = localParts.medication;
+    } else if (!localMatch.matched && cloudMatch.matched) {
+      finalMedication = cloudParts.medication;
+    } else {
+      finalMedication = cloudParts.medication || localParts.medication;
+    }
+  } else {
+    finalMedication = cloudParts.medication || localParts.medication;
+  }
+
+  // Resolve Frequency
+  if (localParts.frequency && cloudParts.frequency) {
+    finalFrequency = cloudParts.frequency;
+  } else {
+    finalFrequency = cloudParts.frequency || localParts.frequency;
+  }
+
+  // Resolve Dosage (Disagreement Decision Tree)
+  if (localParts.dosage && cloudParts.dosage) {
+    if (localParts.dosage.toLowerCase() !== cloudParts.dosage.toLowerCase()) {
+      // Dosage Dispute! Check SQLite safety limits first to prioritize clinical safety warnings.
+      const matchedData = (cloudMatch?.matched ? cloudMatch.data : null) || 
+                          (localMatch?.matched ? localMatch.data : null);
+
+      if (matchedData && matchedData.max_daily_dose_mg > 0) {
+        // Parse frequency value to compute daily exposure
+        let freqMultiplier = 1;
+        const freqLower = finalFrequency.toLowerCase();
+        if (['bd', 'bid', 'twice', 'bl', 'b1', 'bo', 'bd5', 'rfy', '8l'].includes(freqLower)) {
+          freqMultiplier = 2;
+        } else if (['tds', 'tid', 'three', 'td5', 't18', 'tds5', 'td', 'tles', 'te', 't5'].includes(freqLower)) {
+          freqMultiplier = 3;
+        } else if (['qds', 'qid', 'four', 'qd5'].includes(freqLower)) {
+          freqMultiplier = 4;
+        }
+
+        const localNumMatch = localParts.dosage.match(/(\d+(?:\.\d+)?)/);
+        const cloudNumMatch = cloudParts.dosage.match(/(\d+(?:\.\d+)?)/);
+        const localDoseMg = localNumMatch ? parseFloat(localNumMatch[1]) : 0;
+        const cloudDoseMg = cloudNumMatch ? parseFloat(cloudNumMatch[1]) : 0;
+
+        const localDaily = localDoseMg * freqMultiplier;
+        const cloudDaily = cloudDoseMg * freqMultiplier;
+
+        const localOverdose = localDaily > matchedData.max_daily_dose_mg;
+        const cloudOverdose = cloudDaily > matchedData.max_daily_dose_mg;
+
+        if (localOverdose && !cloudOverdose) {
+          // Local exceeds limit (potential doctor error/OCR error). Select it so the warning shows.
+          finalDosage = localParts.dosage;
+        } else if (cloudOverdose && !localOverdose) {
+          // Cloud exceeds limit. Select it so the warning shows.
+          finalDosage = cloudParts.dosage;
+        } else {
+          // Neither or both exceed limit -> Default to Cloud VLM's superior layout recognition
+          finalDosage = cloudParts.dosage;
+        }
+      } else {
+        // No SQLite limits available -> Default to Cloud
+        finalDosage = cloudParts.dosage;
+      }
+    } else {
+      finalDosage = cloudParts.dosage;
+    }
+  } else {
+    finalDosage = cloudParts.dosage || localParts.dosage;
+  }
+
+  return [finalMedication, finalDosage, finalFrequency].filter(Boolean).join(' ');
+};
+
+const resolveHybridLines = async (
+  localText: string,
+  cloudText: string,
+  matchDrug?: (text: string) => Promise<any>
+): Promise<string> => {
+  const localLines = localText.split('\n').map(l => l.trim()).filter(Boolean);
+  const cloudLines = cloudText.split('\n').map(l => l.trim()).filter(Boolean);
+  
+  const resolvedLines: string[] = [];
+  const maxLines = Math.max(localLines.length, cloudLines.length);
+  
+  for (let i = 0; i < maxLines; i++) {
+    const localLine = localLines[i] || '';
+    const cloudLine = cloudLines[i] || '';
+    
+    if (!localLine && cloudLine) {
+      resolvedLines.push(cloudLine);
+      continue;
+    }
+    if (localLine && !cloudLine) {
+      resolvedLines.push(localLine);
+      continue;
+    }
+    
+    const resolved = await resolveLineDisagreement(localLine, cloudLine, matchDrug);
+    resolvedLines.push(resolved);
+  }
+  
+  return resolvedLines.join('\n');
+};
+
+export const useHybridPrescriptionParser = ({ ocrServiceRef, appendLog, matchDrug }: ParserOptions) => {
   const parsePrescription = useCallback(
     async (
       rgbaBuffer: Uint8ClampedArray,
@@ -326,24 +491,32 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
         throw new Error('All cloud models and API fallbacks failed.');
       };
 
+      const localText = await localPromise;
+
+      let cloudResultText = '';
       try {
         // Race the Cloud Track against a short 3000ms timeout for high responsiveness
-        const cloudResultText = await Promise.race([
+        cloudResultText = await Promise.race([
           runCloudTrack(),
-          new Promise<never>((_, reject) =>
+          new Promise<string>((_, reject) =>
             setTimeout(() => reject(new Error('Cloud API request timed out (3000ms limit reached).')), 3000)
           ),
         ]);
-
-        return { text: cloudResultText, source: 'cloud' };
       } catch (err) {
-        appendLog(`[Orchestrator] Cloud Track failed or exceeded cap: ${err instanceof Error ? err.message : String(err)}`);
-        appendLog('[Orchestrator] Falling back immediately to Local WASM result.');
-        const localText = await localPromise;
+        appendLog(`[Orchestrator] Cloud Track failed or timed out: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      if (cloudResultText) {
+        appendLog('[Orchestrator] Merging local and cloud tracks via decision engine...');
+        const mergedText = await resolveHybridLines(localText, cloudResultText, matchDrug);
+        appendLog(`[Orchestrator] Resolved hybrid text: "${mergedText.replace(/\n/g, ' | ')}"`);
+        return { text: mergedText, source: 'cloud' };
+      } else {
+        appendLog('[Orchestrator] Cloud track unavailable or timed out. Using local track.');
         return { text: localText, source: 'local' };
       }
     },
-    [ocrServiceRef, appendLog]
+    [ocrServiceRef, appendLog, matchDrug]
   );
 
   return { parsePrescription };

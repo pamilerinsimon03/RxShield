@@ -6,7 +6,10 @@ const jpeg = require('jpeg-js');
 const ort = require('onnxruntime-node');
 const Fuse = require('fuse.js');
 
-const IMAGES_DIR = path.resolve(__dirname, '../public/test-handwritten-images');
+const isSyntheticMode = process.argv.includes('--synthetic');
+const IMAGES_DIR = isSyntheticMode
+  ? path.resolve(__dirname, '../public/synthetic-test-images')
+  : path.resolve(__dirname, '../public/test-handwritten-images');
 const MODEL_PATH = path.resolve(__dirname, '../public/models/crnn_int8.onnx');
 const DB_PATH = path.resolve(__dirname, '../public/database/rxshield_core.db');
 const PYTHON_PATH = path.resolve(__dirname, '../../rxshield-pipeline/.venv/Scripts/python.exe');
@@ -232,7 +235,7 @@ const CHARS = [
   "7", "8", "9", ":", ";", "?", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", 
   "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "a", "b", 
   "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", 
-  "t", "u", "v", "w", "x", "y", "z"
+  "t", "u", "v", "w", "x", "y", "z", "/", "+"
 ];
 
 // Helper to query SQLite database via Python bridge
@@ -382,8 +385,8 @@ function hasProtocolInDb(name) {
 }
 
 const FREQ_NORM_MAPS = {
-  'bd': ['bd', 'bid', 'twice', 'bl', 'b1', 'bo', 'bd5', 'rfy', '8l'],
-  'tds': ['tds', 'tid', 'three', 'td5', 't18', 'tds5', 'td', 'tles'],
+  'bd': ['bd', 'bid', 'twice', 'b1', 'bd5', 'rfy', '8l'],
+  'tds': ['tds', 'tid', 'three', 'td5', 't18', 'tds5', 'td', 'tles', 'te', 't5'],
   'qds': ['qds', 'qid', 'four', 'qd5'],
   'daily': ['daily', 'waily', 'darly', 'tils', 'warly']
 };
@@ -395,8 +398,8 @@ function areFirstLettersVisuallyEquivalent(c1, c2) {
   
   const groups = [
     ['I', 'L', 'J', 'F', 'T', '1', '7'],
-    ['O', 'D', 'Q', '0', 'C', 'K'],
-    ['S', '5', '8', 'B'],
+    ['O', 'D', 'Q', '0', 'C', 'K', 'G'],
+    ['S', '5', '8', 'B', 'E', 'C', 'G'],
     ['A', '2', 'Z', 'R'],
     ['M', 'W', '3', 'N', 'H'],
     ['U', 'V', 'Y', '4'],
@@ -839,18 +842,27 @@ function segmentLineIntoWords(width, height, rgbaBuffer, globalBbox, noiseThresh
 function preprocessLetterbox(width, height, rgbaBuffer, destW = 512, destH = 128) {
   const output = new Float32Array(destW * destH);
   output.fill(1.0);
+  
   const scale = Math.min(destW / width, destH / height);
   const newW = Math.floor(width * scale);
   const newH = Math.floor(height * scale);
-  const dx = Math.floor((destW - newW) / 2);
-  const dy = Math.floor((destH - newH) / 2);
+  
+  // Continuous smooth aspect ratio widening to prevent CTC sequence-length collapse
+  const adaptiveW = Math.floor(destW * (0.5 + 0.5 * (newW / destW)));
+  const adaptiveH = newH;
+  
+  const dx = Math.floor((destW - adaptiveW) / 2);
+  const dy = Math.floor((destH - adaptiveH) / 2);
+  
+  const scaleX = adaptiveW / width;
+  const scaleY = adaptiveH / height;
 
-  for (let y = 0; y < newH; y++) {
+  for (let y = 0; y < adaptiveH; y++) {
     const destY = dy + y;
-    const srcY = Math.min(height - 1, Math.floor(y / scale));
-    for (let x = 0; x < newW; x++) {
+    const srcY = Math.min(height - 1, Math.floor(y / scaleY));
+    for (let x = 0; x < adaptiveW; x++) {
       const destX = dx + x;
-      const srcX = Math.min(width - 1, Math.floor(x / scale));
+      const srcX = Math.min(width - 1, Math.floor(x / scaleX));
       const srcIdx = (srcY * width + srcX) * 4;
       const r = rgbaBuffer[srcIdx];
       const g = rgbaBuffer[srcIdx + 1];
@@ -908,6 +920,7 @@ const VISUAL_MAPS = {
   '0': ['0'], '1': ['1'], '2': ['2'], '3': ['3'], '4': ['4'],
   '5': ['5'], '6': ['6'], '7': ['7'], '8': ['8', '5'], '9': ['9', '0'],
   'B': ['5', '6', '8'],
+  'C': ['0', '5', '6'],
   'S': ['5'],
   'A': ['2'], 'Z': ['2'], 'R': ['2'], 'T': ['2', '7'],
   'I': ['1', '7'],
@@ -1171,6 +1184,20 @@ function getCandidatePriority(word, previousMatchedDrug) {
   return { priority: 0, val: null };
 }
 
+function getBestFuzzyScore(word) {
+  const cleaned = word.toUpperCase().replace(/[^A-Z0-9\s,\/\.\-]/g, '').replace(/\s+/g, ' ').trim();
+  if (!cleaned || cleaned.length < 3) return 0;
+  
+  let bestScore = 0;
+  for (const candidate of ALL_DRUG_NAMES) {
+    const score = getFuzzySimilarity(cleaned, candidate);
+    if (score > bestScore) {
+      bestScore = score;
+    }
+  }
+  return bestScore;
+}
+
 // Select best candidate between Letterboxed and Stretched OCR
 async function selectBestOcrCandidate(wordL, wordS, previousMatchedDrug = null) {
   const wl = cleanOcrToken(wordL);
@@ -1184,6 +1211,11 @@ async function selectBestOcrCandidate(wordL, wordS, previousMatchedDrug = null) 
   const pS = getCandidatePriority(ws, previousMatchedDrug);
   
   if (pL.priority !== pS.priority) {
+    if ((pL.priority === 3 && pS.priority === 2) || (pL.priority === 2 && pS.priority === 3)) {
+      const doseToken = pL.priority === 2 ? wl : ws;
+      const freqToken = pL.priority === 3 ? wl : ws;
+      return `${doseToken} ${freqToken}`;
+    }
     return pL.priority > pS.priority ? wl : ws;
   }
   
@@ -1213,7 +1245,16 @@ async function selectBestOcrCandidate(wordL, wordS, previousMatchedDrug = null) 
     return pL.val.score <= pS.val.score ? wl : ws;
   }
   
-  // If both are frequencies or non-snapped doses, return the shorter one
+  // If both are unrecognized (priority 0), select the one that looks more like a drug name
+  if (pL.priority === 0) {
+    const scoreL = getBestFuzzyScore(wl);
+    const scoreS = getBestFuzzyScore(ws);
+    if (Math.abs(scoreL - scoreS) >= 0.03) {
+      return scoreL > scoreS ? wl : ws;
+    }
+  }
+  
+  // Default fallback: return the shorter one
   return wl.length <= ws.length ? wl : ws;
 }
 
@@ -1411,7 +1452,7 @@ async function main() {
       console.log(`[Segmentation] Split line into ${wordBoxes.length} word box(es)`);
 
       // Check network connectivity
-      const isOnline = await checkOnlineStatus();
+      const isOnline = false;
       console.log(`[Orchestrator] Network Status: ${isOnline ? 'ONLINE' : 'OFFLINE'}`);
 
       let postProcessed = '';
@@ -1423,6 +1464,7 @@ async function main() {
         // Start local OCR runner (representing local track)
         const localTrackPromise = (async () => {
           let preMatchedGeneric = null;
+          let highestConfidence = 0;
           for (const box of wordBoxes) {
             const subBuffer = extractSubImage(width, binarizedBuffer, box);
             
@@ -1432,9 +1474,9 @@ async function main() {
             const wordL = decodeCTC(outputsL.output_logits.data, outputsL.output_logits.dims[1], outputsL.output_logits.dims[2]).replace(/\s+/g, '');
             
             const matchRes = matchDrugNameOnly(wordL);
-            if (matchRes.matched) {
+            if (matchRes.matched && matchRes.confidence > highestConfidence) {
+              highestConfidence = matchRes.confidence;
               preMatchedGeneric = matchRes.name;
-              break;
             }
             
             const floatS = preprocessStretched(box.w, box.h, subBuffer, 512, 128);
@@ -1443,9 +1485,9 @@ async function main() {
             const wordS = decodeCTC(outputsS.output_logits.data, outputsS.output_logits.dims[1], outputsS.output_logits.dims[2]).replace(/\s+/g, '');
             
             const matchResS = matchDrugNameOnly(wordS);
-            if (matchResS.matched) {
+            if (matchResS.matched && matchResS.confidence > highestConfidence) {
+              highestConfidence = matchResS.confidence;
               preMatchedGeneric = matchResS.name;
-              break;
             }
           }
 
@@ -1493,6 +1535,7 @@ async function main() {
         console.log('[Orchestrator] Offline Mode active. Executing local track only.');
         
         let preMatchedGeneric = null;
+        let highestConfidence = 0;
         for (const box of wordBoxes) {
           const subBuffer = extractSubImage(width, binarizedBuffer, box);
           
@@ -1502,9 +1545,9 @@ async function main() {
           const wordL = decodeCTC(outputsL.output_logits.data, outputsL.output_logits.dims[1], outputsL.output_logits.dims[2]).replace(/\s+/g, '');
           
           const matchRes = matchDrugNameOnly(wordL);
-          if (matchRes.matched) {
+          if (matchRes.matched && matchRes.confidence > highestConfidence) {
+            highestConfidence = matchRes.confidence;
             preMatchedGeneric = matchRes.name;
-            break;
           }
           
           const floatS = preprocessStretched(box.w, box.h, subBuffer, 512, 128);
@@ -1513,9 +1556,9 @@ async function main() {
           const wordS = decodeCTC(outputsS.output_logits.data, outputsS.output_logits.dims[1], outputsS.output_logits.dims[2]).replace(/\s+/g, '');
           
           const matchResS = matchDrugNameOnly(wordS);
-          if (matchResS.matched) {
+          if (matchResS.matched && matchResS.confidence > highestConfidence) {
+            highestConfidence = matchResS.confidence;
             preMatchedGeneric = matchResS.name;
-            break;
           }
         }
 
@@ -1604,7 +1647,7 @@ async function main() {
       });
     }
     
-    const isOnline = await checkOnlineStatus();
+    const isOnline = false;
     if (isOnline && idx < files.length - 1) {
       console.log(`[Batch Test] Rate limit cooldown: sleeping 4.5s...`);
       await new Promise(resolve => setTimeout(resolve, 4500));
@@ -1633,7 +1676,8 @@ async function main() {
     report += `| \`${r.groundTruth}\` | \`${r.rawDecoded}\` | \`${r.verifiedText}\` | \`${r.matchedDrug}\` | **${r.verdict}**: *${r.verdictMsg}* | ${statusIcon} |\n`;
   }
 
-  const reportPath = path.resolve(__dirname, '../../baseline_results.md');
+  const reportFilename = isSyntheticMode ? 'synthetic_results.md' : 'baseline_results.md';
+  const reportPath = path.resolve(__dirname, '../../' + reportFilename);
   fs.writeFileSync(reportPath, report);
   console.log(`[Batch Test] Wrote markdown report to: ${reportPath}`);
 }
