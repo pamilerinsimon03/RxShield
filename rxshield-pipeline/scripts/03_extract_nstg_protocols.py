@@ -2,10 +2,9 @@ import os
 # pyrefly: ignore [missing-import]
 import pymupdf
 
-# Configuration constants
 START_PAGE = 13      # 1-indexed page number to start extraction from
 END_PAGE = 599       # 1-indexed page number to end extraction at (inclusive)
-LIMIT_PAGES = None      # Configurable limit to process a small slice during fast validation (set to None for all pages)
+LIMIT_PAGES = None      # Limit to process a small slice during fast validation (None for all pages)
 OUTPUT_FILENAME = "nstg_raw_ocr_output.txt"
 
 def ensure_directory_structure():
@@ -17,11 +16,20 @@ def ensure_directory_structure():
         os.makedirs(processed_dir)
 
 def main():
+    """
+    Orchestrate Tesseract OCR extraction from the Nigeria Standard Treatment Guidelines PDF.
+    
+    Workflow:
+    1. Initialize the processed data directory.
+    2. Locate the guidelines PDF (handling potential space or URL-encoded filenames).
+    3. Run a fast test on the first target page to verify Tesseract OCR availability.
+    4. Loop through specified pages, running OCR at 300 DPI with preserved whitespace.
+    5. Write the extracted text with page separators to a flat text file.
+    """
     ensure_directory_structure()
     
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
-    # Check both potential PDF filenames (with space and URL-encoded space)
     pdf_path_space = os.path.join(base_dir, 'data', 'raw', 'Nigeria Standard Treatment Guidelines 2022.pdf')
     pdf_path_url = os.path.join(base_dir, 'data', 'raw', 'Nigeria%20Standard%20Treatment%20Guidelines%202022.pdf')
     
@@ -38,15 +46,13 @@ def main():
     total_pages = len(doc)
     print(f"PDF contains {total_pages} total pages.")
 
-    # Serialize output raw text path
     output_file_path = os.path.join(base_dir, 'data', 'processed', OUTPUT_FILENAME)
     
-    # Calculate 0-based indices for extraction range
     start_idx = max(0, START_PAGE - 1)
     end_idx = min(total_pages - 1, END_PAGE - 1)
     
     try:
-        # Test if Tesseract OCR is available by doing a fast test on the first page
+        # Fast test on the first page to verify Tesseract OCR availability
         test_page = doc[start_idx]
         test_ocr = test_page.get_textpage_ocr(language="eng", dpi=72)
         test_page.get_text(textpage=test_ocr)
@@ -73,11 +79,10 @@ def main():
         page_num = idx + 1
         print(f"Processing Page {page_num}/{total_pages} via Tesseract OCR (300 DPI)...")
         
-        # Load the page
         page = doc[idx]
         
         try:
-            # Instantiate PyMuPDF's Tesseract handler with English language pack at 300 DPI
+            # Run OCR at 300 DPI with preserved whitespace for accurate structured parsing
             text_page_ocr = page.get_textpage_ocr(
                 flags=pymupdf.TEXT_PRESERVE_WHITESPACE, 
                 language="eng", 
@@ -85,7 +90,6 @@ def main():
             )
             raw_extracted_text = page.get_text(textpage=text_page_ocr)
             
-            # Format output block with page separator
             output_lines.append(f"--- PAGE {page_num} ---\n")
             output_lines.append(raw_extracted_text)
             output_lines.append("\n")
@@ -95,7 +99,6 @@ def main():
             output_lines.append(f"--- PAGE {page_num} ---\n")
             output_lines.append(f"[OCR ERROR: {e}]\n\n")
 
-    # Serialize output raw text
     output_file_path = os.path.join(base_dir, 'data', 'processed', OUTPUT_FILENAME)
     print(f"Writing raw OCR text to: {output_file_path}")
     

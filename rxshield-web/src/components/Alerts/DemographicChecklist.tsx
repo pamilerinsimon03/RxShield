@@ -6,6 +6,10 @@ interface DemographicChecklistProps {
   validationData: any;
 }
 
+/**
+ * DemographicChecklist component handles clinician override validation gates,
+ * checking for pregnancy and renal clearance requirements and verifying active overrides.
+ */
 export const DemographicChecklist: React.FC<DemographicChecklistProps> = ({ validationData }) => {
   const { query, logOverride } = useDatabase();
   const [items, setItems] = useState<Array<{ id: string; label: string; checked: boolean }>>([]);
@@ -32,7 +36,6 @@ export const DemographicChecklist: React.FC<DemographicChecklistProps> = ({ vali
     setItems(checklistItems);
     setIsAuthorized(false);
 
-    // Check if there is an existing override in the DB for this drug
     const checkExistingOverride = async () => {
       if (!validationData?.genericName) return;
       try {
@@ -42,7 +45,6 @@ export const DemographicChecklist: React.FC<DemographicChecklistProps> = ({ vali
         );
         if (rows && rows.length > 0) {
           setIsAuthorized(true);
-          // If the timestamp matches the active override session, we restore it
           setAuthTime(new Date(rows[0].timestamp).toLocaleTimeString());
         }
       } catch (err) {

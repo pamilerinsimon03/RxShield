@@ -2,26 +2,7 @@ import re
 import os
 import pandas as pd
 
-def levenshtein_distance(s1, s2):
-    """
-    Computes the Levenshtein distance between s1 and s2.
-    """
-    if len(s1) < len(s2):
-        return levenshtein_distance(s2, s1)
-    if len(s2) == 0:
-        return len(s1)
-    
-    previous_row = range(len(s2) + 1)
-    for i, c1 in enumerate(s1):
-        current_row = [i + 1]
-        for j, c2 in enumerate(s2):
-            insertions = previous_row[j + 1] + 1
-            deletions = current_row[j] + 1
-            substitutions = previous_row[j] + (c1 != c2)
-            current_row.append(min(insertions, deletions, substitutions))
-        previous_row = current_row
-        
-    return previous_row[-1]
+from utils import levenshtein_distance
 
 _eml_lookup_cache = {}
 _std_eml_names_cache = None
@@ -35,7 +16,7 @@ def find_best_eml_match(candidate, eml_names):
     """
     global _std_eml_names_cache
     
-    # 0. Check memoization cache first
+    # Check memoization cache first
     if candidate in _eml_lookup_cache:
         return _eml_lookup_cache[candidate]
         
@@ -45,7 +26,6 @@ def find_best_eml_match(candidate, eml_names):
         return res
         
     def standardize(s):
-        # Replace slashes, hyphens, and pluses with a standardized ' + '
         s = re.sub(r'[\s\/\-\+]+', ' + ', s.upper())
         s = s.strip(' +')
         return " ".join(s.split())
@@ -56,18 +36,15 @@ def find_best_eml_match(candidate, eml_names):
         _eml_lookup_cache[candidate] = res
         return res
         
-    # Pre-build standardized EML cache once
     if _std_eml_names_cache is None:
         _std_eml_names_cache = [(eml, standardize(eml)) for eml in eml_names]
         
-    # 1. Try exact standardized match
     for eml_name, std_eml in _std_eml_names_cache:
         if std_eml == std_candidate:
             res = (eml_name, 0, 1.0)
             _eml_lookup_cache[candidate] = res
             return res
             
-    # 2. Try fuzzy standardized match
     best_match = None
     min_dist = 999
     max_confidence = 0.0
@@ -75,7 +52,7 @@ def find_best_eml_match(candidate, eml_names):
     len_cand = len(std_candidate)
     
     for eml_name, std_eml in _std_eml_names_cache:
-        # Length gate check: if length difference is > 2, distance must be > 2
+        # Length gate: if len diff > 2, distance must be > 2
         if abs(len_cand - len(std_eml)) > 2:
             continue
             
@@ -122,10 +99,9 @@ def parse_thresholds(block_text, dose_from_line):
     max_daily_dose_mg = None
     max_duration_days = None
     
-    # Clean text: replace multi-spaces and newlines
     text = " ".join(block_text.upper().split())
 
-    # Check dose from line first for single dose
+    # Check direct dose match first
     if dose_from_line:
         m = re.match(r'^(\d+(?:\.\d+)?)\s*(MG|G|ML|IU)$', dose_from_line.upper())
         if m:
@@ -149,9 +125,9 @@ def parse_thresholds(block_text, dose_from_line):
                 max_daily_dose_mg = converted
                 break
 
-    # If single dose is still None, search for range or single value in the block
+    # Fallback single dose search if not already resolved
     if max_single_dose_mg is None:
-        # Range check e.g. "10 - 20 MG" or "10-20 MG"
+        # Range check e.g. "10 - 20 MG"
         range_match = re.search(r'(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*(MG|G|ML|IU)', text)
         if range_match:
             max_single_dose_mg = convert_to_mg(range_match.group(2), range_match.group(3))
@@ -172,7 +148,7 @@ def parse_thresholds(block_text, dose_from_line):
                         max_single_dose_mg = converted
                         break
 
-    # If daily dose is still None, look for frequency multiplier
+    # Compute daily dose via frequency multiplier
     if max_daily_dose_mg is None and max_single_dose_mg is not None:
         mult = None
         if re.search(r'\b(?:THREE\s+TIMES\s+DAILY|TDS|8\s+HOURLY|3\s+TIMES\s+DAILY|8-HOURLY)\b', text):
@@ -222,7 +198,19 @@ def parse_thresholds(block_text, dose_from_line):
     return max_single_dose_mg, max_daily_dose_mg, max_duration_days, requires_pregnancy_check, requires_renal_check
 
 def clean_and_validate():
-    # Base paths
+    """
+    Load EML reference dictionary, process flat OCR text, statefully parse drug protocols,
+    run fuzzy validation matching, and aggregate/export clinical guidelines.
+    
+    Workflow:
+    1. Load EML references and raw OCR text.
+    2. Merge standalone bullet line layouts.
+    3. Parse the lines using a stateful parser matching chapters, subsections, and drug lines.
+    4. Validate drug names against EML using exact/fuzzy matching.
+    5. Parse and calculate dosage thresholds.
+    6. Aggregate profiles and apply high-risk overrides (e.g. Methotrexate).
+    7. Save clean protocols CSV and quarantine logs.
+    """
     eml_path = 'data/processed/eml_normalized.csv'
     raw_path = 'data/processed/nstg_raw_ocr_output.txt'
     clean_out_path = 'data/processed/nstg_protocols_clean.csv'
@@ -259,7 +247,6 @@ def clean_and_validate():
             i += 1
     print(f"Merged layout anomalies. Total lines now: {len(processed_lines)}.")
 
-    # Stateful parser trackers
     page_num = 13
     current_chapter_num = None
     current_chapter_title = ""
@@ -293,7 +280,7 @@ def clean_and_validate():
         
         raw_name = block["raw_name"]
         
-        # Strip all dosage values from the raw name (e.g. 500mg, 125mg, 1.5g) to get a clean name
+        # Strip dosage values from name (e.g. 500mg, 1.5g) to get a clean name
         cleaned_name = re.sub(r'\b\d+(?:\.\d+)?\s*(?:MG|G|ML|IU)\b', '', raw_name, flags=re.IGNORECASE).strip()
             
         words = cleaned_name.split()
@@ -312,14 +299,11 @@ def clean_and_validate():
 
         if min_dist > 0:
             fuzzy_repair_count += 1
-            # Log fuzzy repair details
             print(f"  Fuzzy Repair: '{candidate_name}' -> '{best_match}' (dist: {min_dist}, conf: {max_confidence:.2f})")
 
-        # Parse block text for dosages
         block_text = " ".join(block["lines"])
         single_dose, daily_dose, duration, preg_flag, renal_flag = parse_thresholds(block_text, block["dose_from_line"])
 
-        # Check if we failed to yield any parseable threshold
         if single_dose is None and daily_dose is None:
             quarantined_logs.append(f"[NO_DOSE] Candidate '{best_match}' (raw line: '{block['first_line']}') failed to yield a parseable single or daily dose threshold. Citation: {block['citation']}")
             return
@@ -340,13 +324,11 @@ def clean_and_validate():
         if not line_str:
             continue
 
-        # Page match check
         page_match = page_pattern.match(line_str)
         if page_match:
             page_num = int(page_match.group(1))
             continue
 
-        # Chapter match check
         chapter_match = chapter_pattern.match(line_str)
         if chapter_match:
             if active_block:
@@ -358,26 +340,22 @@ def clean_and_validate():
             candidates_disorder = []
             continue
 
-        # Subsection Heading check to update current disorder statefully
         upper_line = line_str.upper()
         if upper_line in SUBSECTION_HEADINGS:
             if active_block:
                 process_block(active_block)
                 active_block = None
             
-            # Update disorder name when entering a new subsection
             if upper_line == "INTRODUCTION" or current_disorder is None:
                 for cand in reversed(candidates_disorder):
                     cand_clean = cand.strip()
                     if not cand_clean:
                         continue
-                    # Check if it looks like a valid heading
                     if len(cand_clean) < 60 and not cand_clean[-1] in {'.', ',', ';', ':', ')'}:
                         current_disorder = cand_clean
                         break
             continue
 
-        # Check if this line is a potential disorder title candidate
         is_num = line_str.isdigit()
         is_roman = bool(re.match(r'^[ivxldcmIVXLDCM]+$', line_str))
         is_bullet = line_str.startswith('-') or line_str.startswith('*') or line_str.startswith('¢') or line_str.startswith('—')
@@ -388,20 +366,16 @@ def clean_and_validate():
             else:
                 candidates_disorder.append(line_str)
 
-        # Drug prescription line match check
         drug_match = drug_pattern.match(line_str)
         if drug_match:
             if active_block:
                 process_block(active_block)
             
-            # The entire matched line content after the bullet
             raw_line_content = drug_match.group(1).strip()
             
-            # Search for the first dosage in the line
             dose_match = re.search(r'(\d+(?:\.\d+)?\s*(?:MG|G|ML|IU))', raw_line_content, re.IGNORECASE)
             dose_val_str = dose_match.group(1) if dose_match else None
             
-            # Format the citation string
             citation = f"Chapter {current_chapter_num or 0}, Page {page_num}"
             active_block = {
                 "raw_name": raw_line_content,
@@ -414,7 +388,6 @@ def clean_and_validate():
             if active_block:
                 active_block["lines"].append(line_str)
 
-    # Process the final block at EOF
     if active_block:
         process_block(active_block)
 
@@ -428,7 +401,6 @@ def clean_and_validate():
     if raw_parsed_protocols:
         df = pd.DataFrame(raw_parsed_protocols)
         
-        # Unify and aggregate duplicate generic_name profiles
         agg_funcs = {
             'max_single_dose_mg': 'max',
             'max_daily_dose_mg': 'max',
@@ -440,25 +412,23 @@ def clean_and_validate():
         
         df_agg = df.groupby('generic_name', as_index=False).agg(agg_funcs)
         
-        # Force demographic flags for known high-risk medications (e.g. METHOTREXATE)
+        # Force demographic checks for high-risk medications (e.g. Methotrexate)
         for idx, row in df_agg.iterrows():
             gname = str(row['generic_name']).upper()
             if 'METHOTREXATE' in gname:
                 df_agg.at[idx, 'requires_pregnancy_check'] = 1
                 df_agg.at[idx, 'requires_renal_check'] = 1
 
-        # Cast demographic check flags to strict integers 0 or 1
         df_agg['requires_pregnancy_check'] = df_agg['requires_pregnancy_check'].astype(int)
         df_agg['requires_renal_check'] = df_agg['requires_renal_check'].astype(int)
         
-        # Cast duration to nullable Int64 to avoid float formatting in CSV
+        # Use Int64 to prevent float serialization issues in CSV
         df_agg['max_duration_days'] = df_agg['max_duration_days'].astype('Int64')
         
-        # Save aggregated CSV
         df_agg.to_csv(clean_out_path, index=False, encoding='utf-8')
         print(f"Saved {len(df_agg)} unique clinical guideline models to '{clean_out_path}'.")
     else:
-        # Save empty template to clean_out_path to prevent downstream failures
+        # Save empty template to prevent downstream failures
         cols = ['generic_name', 'max_single_dose_mg', 'max_daily_dose_mg', 'max_duration_days', 'requires_pregnancy_check', 'requires_renal_check', 'guideline_citation']
         pd.DataFrame(columns=cols).to_csv(clean_out_path, index=False, encoding='utf-8')
         print(f"Saved empty template CSV to '{clean_out_path}' (zero records matched).")

@@ -10,6 +10,10 @@ interface OverrideAudit {
   overridden_checks: string;
 }
 
+/**
+ * HistoryView component renders a timeline of past prescription overrides
+ * and safety audit signatures from the local database, appending fallback mock data.
+ */
 export const HistoryView: React.FC = () => {
   const { query, isDbReady } = useDatabase();
   const [audits, setAudits] = useState<OverrideAudit[]>([]);
@@ -18,21 +22,21 @@ export const HistoryView: React.FC = () => {
   const mockAudits: OverrideAudit[] = [
     {
       id: -1,
-      timestamp: new Date(Date.now() - 1000 * 60 * 15).toISOString(), // 15 mins ago
+      timestamp: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
       generic_name: 'AMOXIL (AMOXICILLIN)',
       signature_lock: 'PHYSICIAN_OVERRIDE_VERIFIED @ 10:24:12 AM',
       overridden_checks: 'dosage'
     },
     {
       id: -2,
-      timestamp: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(), // 1 day ago
+      timestamp: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(),
       generic_name: 'METHOTREXATE',
       signature_lock: 'PHYSICIAN_OVERRIDE_VERIFIED @ 3:15:44 PM',
       overridden_checks: 'pregnancy, renal'
     },
     {
       id: -3,
-      timestamp: new Date(Date.now() - 1000 * 60 * 60 * 24 * 3).toISOString(), // 3 days ago
+      timestamp: new Date(Date.now() - 1000 * 60 * 60 * 24 * 3).toISOString(),
       generic_name: 'AUGMENTIN (CO-AMOXICLAV)',
       signature_lock: 'PHYSICIAN_OVERRIDE_VERIFIED @ 9:02:10 AM',
       overridden_checks: 'dosage'
@@ -52,7 +56,6 @@ export const HistoryView: React.FC = () => {
           'SELECT id, timestamp, generic_name, signature_lock, overridden_checks FROM override_audits ORDER BY timestamp DESC'
         );
         
-        // Combine DB audits with mock audits (placed at the bottom)
         const dbAudits = rows.map((r: any) => ({
           id: r.id,
           timestamp: r.timestamp,
@@ -73,10 +76,12 @@ export const HistoryView: React.FC = () => {
     fetchAudits();
   }, [isDbReady, query]);
 
+  /**
+   * Helper function to format ISO timestamps into localized dates.
+   */
   const formatDate = (isoString: string) => {
     try {
       const date = new Date(isoString);
-      // Format as "June 25, 2026, 17:30" or similar
       return date.toLocaleString(undefined, {
         month: 'short',
         day: 'numeric',
@@ -122,7 +127,6 @@ export const HistoryView: React.FC = () => {
           <div className="relative border-l border-slate-100 pl-4 ml-3 py-2 space-y-5">
             {audits.map((audit) => (
               <div key={audit.id} className="relative group">
-                {/* Timeline Dot */}
                 <div className="absolute -left-[24.5px] top-1 w-4 h-4 rounded-full bg-white border-2 border-trust-teal flex items-center justify-center group-hover:scale-110 transition-transform shadow-sm">
                   <div className="w-1.5 h-1.5 rounded-full bg-trust-teal" />
                 </div>

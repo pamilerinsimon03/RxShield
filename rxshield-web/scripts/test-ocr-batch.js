@@ -6,6 +6,41 @@ const jpeg = require('jpeg-js');
 const ort = require('onnxruntime-node');
 const Fuse = require('fuse.js');
 
+const ts = require('typescript');
+
+function loadTsModule(relativePath) {
+  const absolutePath = path.resolve(__dirname, relativePath);
+  const tsContent = fs.readFileSync(absolutePath, 'utf8');
+  const jsContent = ts.transpileModule(tsContent, {
+    compilerOptions: { 
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020
+    }
+  }).outputText;
+  
+  const m = new module.constructor();
+  m.paths = module.paths;
+  m._compile(jsContent, absolutePath);
+  return m.exports;
+}
+
+const { 
+  levenshtein, 
+  jaro, 
+  jaroWinkler, 
+  getFuzzySimilarity, 
+  areFirstLettersVisuallyEquivalent 
+} = loadTsModule('../src/utils/stringDistance.ts');
+
+const { 
+  adaptiveThresholdBradley, 
+  binarizeImageData, 
+  decodeCTC, 
+  findGlobalBoundingBox, 
+  extractSubImage,
+  CHARS
+} = loadTsModule('../src/utils/imageProcessing.ts');
+
 const isSyntheticMode = process.argv.includes('--synthetic');
 const IMAGES_DIR = isSyntheticMode
   ? path.resolve(__dirname, '../public/synthetic-test-images')
@@ -229,14 +264,7 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
   throw new Error('All cloud models and API fallbacks failed.');
 }
 
-// CRNN vocabulary
-const CHARS = [
-  "", " ", "!", "\"", "'", "(", ")", ",", "-", ".", "0", "1", "2", "3", "4", "5", "6", 
-  "7", "8", "9", ":", ";", "?", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", 
-  "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "a", "b", 
-  "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", 
-  "t", "u", "v", "w", "x", "y", "z", "/", "+"
-];
+
 
 // Helper to query SQLite database via Python bridge
 function runDbQuery(sql, params = []) {
@@ -262,86 +290,7 @@ function normalizeText(text) {
   return normalized.trim();
 }
 
-// Levenshtein and similarity helpers from src/utils/stringDistance.ts
-function levenshtein(s1, s2) {
-  const len1 = s1.length;
-  const len2 = s2.length;
-  if (len1 === 0) return len2;
-  if (len2 === 0) return len1;
-  const matrix = [];
-  for (let i = 0; i <= len1; i++) matrix[i] = [i];
-  for (let j = 0; j <= len2; j++) matrix[0][j] = j;
-  for (let i = 1; i <= len1; i++) {
-    for (let j = 1; j <= len2; j++) {
-      const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
-      matrix[i][j] = Math.min(
-        matrix[i - 1][j] + 1,
-        matrix[i][j - 1] + 1,
-        matrix[i - 1][j - 1] + cost
-      );
-    }
-  }
-  return matrix[len1][len2];
-}
 
-function jaro(s1, s2) {
-  const len1 = s1.length;
-  const len2 = s2.length;
-  if (len1 === 0 && len2 === 0) return 1.0;
-  if (len1 === 0 || len2 === 0) return 0.0;
-  const matchWindow = Math.floor(Math.max(len1, len2) / 2) - 1;
-  const matches1 = new Array(len1).fill(false);
-  const matches2 = new Array(len2).fill(false);
-  let matches = 0;
-  let transpositions = 0;
-  for (let i = 0; i < len1; i++) {
-    const start = Math.max(0, i - matchWindow);
-    const end = Math.min(len2, i + matchWindow + 1);
-    for (let j = start; j < end; j++) {
-      if (!matches2[j] && s1[i] === s2[j]) {
-        matches1[i] = true;
-        matches2[j] = true;
-        matches++;
-        break;
-      }
-    }
-  }
-  if (matches === 0) return 0.0;
-  let k = 0;
-  for (let i = 0; i < len1; i++) {
-    if (matches1[i]) {
-      while (!matches2[k]) k++;
-      if (s1[i] !== s2[k]) transpositions++;
-      k++;
-    }
-  }
-  const t = transpositions / 2;
-  return (matches / len1 + matches / len2 + (matches - t) / matches) / 3.0;
-}
-
-function jaroWinkler(s1, s2) {
-  const jaroScore = jaro(s1, s2);
-  const p = 0.1;
-  let l = 0;
-  const maxPrefix = Math.min(4, s1.length, s2.length);
-  for (let i = 0; i < maxPrefix; i++) {
-    if (s1[i] === s2[i]) l++;
-    else break;
-  }
-  return jaroScore + l * p * (1.0 - jaroScore);
-}
-
-function getFuzzySimilarity(s1, s2) {
-  const str1 = s1.trim().toUpperCase();
-  const str2 = s2.trim().toUpperCase();
-  if (str1 === str2) return 1.0;
-  const maxLen = Math.max(str1.length, str2.length);
-  if (maxLen === 0) return 1.0;
-  const levDist = levenshtein(str1, str2);
-  const levSim = 1.0 - levDist / maxLen;
-  const jwSim = jaroWinkler(str1, str2);
-  return (levSim + jwSim) / 2.0;
-}
 
 let DRUG_TO_GENERIC_MAP = new Map();
 let PROTOCOL_GENERICS = new Set();
@@ -391,28 +340,7 @@ const FREQ_NORM_MAPS = {
   'daily': ['daily', 'waily', 'darly', 'tils', 'warly']
 };
 
-function areFirstLettersVisuallyEquivalent(c1, c2) {
-  const char1 = c1.toUpperCase();
-  const char2 = c2.toUpperCase();
-  if (char1 === char2) return true;
-  
-  const groups = [
-    ['I', 'L', 'J', 'F', 'T', '1', '7'],
-    ['O', 'D', 'Q', '0', 'C', 'K', 'G'],
-    ['S', '5', '8', 'B', 'E', 'C', 'G'],
-    ['A', '2', 'Z', 'R'],
-    ['M', 'W', '3', 'N', 'H'],
-    ['U', 'V', 'Y', '4'],
-    ['P', 'R', 'B', 'F', 'H', 'D']
-  ];
-  
-  for (const group of groups) {
-    if (group.includes(char1) && group.includes(char2)) {
-      return true;
-    }
-  }
-  return false;
-}
+
 
 // Match single drug name helper
 function matchDrugNameOnly(text) {
@@ -569,162 +497,7 @@ async function matchDrug(text) {
   };
 }
 
-// Bradley-Roth adaptive thresholding
-function adaptiveThresholdBradley(width, height, rgbaBuffer, windowSize = 25, t = 15) {
-  const gray = new Uint8Array(width * height);
-  const integral = new Int32Array(width * height);
-  const output = new Uint8ClampedArray(rgbaBuffer.length);
 
-  for (let y = 0; y < height; y++) {
-    let sum = 0;
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 4;
-      const r = rgbaBuffer[idx];
-      const g = rgbaBuffer[idx + 1];
-      const b = rgbaBuffer[idx + 2];
-      const gr = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
-      gray[y * width + x] = gr;
-
-      sum += gr;
-      if (y === 0) {
-        integral[y * width + x] = sum;
-      } else {
-        integral[y * width + x] = integral[(y - 1) * width + x] + sum;
-      }
-    }
-  }
-
-  const s2 = Math.floor(windowSize / 2);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 4;
-      
-      const x1 = Math.max(0, x - s2);
-      const x2 = Math.min(width - 1, x + s2);
-      const y1 = Math.max(0, y - s2);
-      const y2 = Math.min(height - 1, y + s2);
-
-      const count = (x2 - x1 + 1) * (y2 - y1 + 1);
-
-      let sum = integral[y2 * width + x2];
-      if (x1 > 0) {
-        sum -= integral[y2 * width + (x1 - 1)];
-      }
-      if (y1 > 0) {
-        sum -= integral[(y1 - 1) * width + x2];
-      }
-      if (x1 > 0 && y1 > 0) {
-        sum += integral[(y1 - 1) * width + (x1 - 1)];
-      }
-
-      const val = (gray[y * width + x] * count) < (sum * (100 - t) / 100) ? 0 : 255;
-
-      output[idx] = val;
-      output[idx + 1] = val;
-      output[idx + 2] = val;
-      output[idx + 3] = 255;
-    }
-  }
-
-  return output;
-}
-
-function binarizeImageData(width, height, rgbaBuffer, threshold) {
-  if (threshold === undefined) {
-    return adaptiveThresholdBradley(width, height, rgbaBuffer, 25, 15);
-  }
-  const output = new Uint8ClampedArray(rgbaBuffer.length);
-  for (let i = 0; i < rgbaBuffer.length; i += 4) {
-    const r = rgbaBuffer[i];
-    const g = rgbaBuffer[i + 1];
-    const b = rgbaBuffer[i + 2];
-    const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-    const val = gray < threshold ? 0 : 255;
-    output[i] = val;
-    output[i + 1] = val;
-    output[i + 2] = val;
-    output[i + 3] = 255;
-  }
-  return output;
-}
-
-function findGlobalBoundingBox(width, height, rgbaBuffer, noiseThreshold = 2) {
-  const columnCounts = new Int32Array(width);
-  const rowCounts = new Int32Array(height);
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (y * width + x) * 4;
-      if (rgbaBuffer[idx] < 128) {
-        columnCounts[x]++;
-        rowCounts[y]++;
-      }
-    }
-  }
-
-  let xMin = 0;
-  for (let x = 0; x < width; x++) {
-    if (columnCounts[x] > noiseThreshold) {
-      xMin = x;
-      break;
-    }
-  }
-
-  let xMax = width - 1;
-  for (let x = width - 1; x >= 0; x--) {
-    if (columnCounts[x] > noiseThreshold) {
-      xMax = x;
-      break;
-    }
-  }
-
-  let yMin = 0;
-  for (let y = 0; y < height; y++) {
-    if (rowCounts[y] > noiseThreshold) {
-      yMin = y;
-      break;
-    }
-  }
-
-  let yMax = height - 1;
-  for (let y = height - 1; y >= 0; y--) {
-    if (rowCounts[y] > noiseThreshold) {
-      yMax = y;
-      break;
-    }
-  }
-
-  if (xMin >= xMax || yMin >= yMax) {
-    return { x: 0, y: 0, w: width, h: height };
-  }
-
-  const paddingX = 12;
-  const paddingY = 8;
-  const x1 = Math.max(0, xMin - paddingX);
-  const x2 = Math.min(width, xMax + paddingX);
-  const y1 = Math.max(0, yMin - paddingY);
-  const y2 = Math.min(height, yMax + paddingY);
-
-  return {
-    x: x1,
-    y: y1,
-    w: x2 - x1,
-    h: y2 - y1
-  };
-}
-
-function extractSubImage(width, rgbaBuffer, bbox) {
-  const { x, y, w, h } = bbox;
-  const subBuffer = new Uint8ClampedArray(w * h * 4);
-  for (let dy = 0; dy < h; dy++) {
-    const srcY = y + dy;
-    const srcRowStart = srcY * width * 4;
-    const destRowStart = dy * w * 4;
-    const srcSlice = rgbaBuffer.subarray(srcRowStart + x * 4, srcRowStart + (x + w) * 4);
-    subBuffer.set(srcSlice, destRowStart);
-  }
-  return subBuffer;
-}
 
 // Precise word segmentation
 function segmentLineIntoWords(width, height, rgbaBuffer, globalBbox, noiseThreshold = 1) {
@@ -892,28 +665,7 @@ function preprocessStretched(width, height, rgbaBuffer, destW = 512, destH = 128
   return output;
 }
 
-// CTC Greedy Decoder
-function decodeCTC(logits, timeSteps, numClasses) {
-  let decoded = "";
-  let lastCharIdx = -1;
-  for (let t = 0; t < timeSteps; t++) {
-    let maxVal = -Infinity;
-    let maxIdx = -1;
-    for (let c = 0; c < numClasses; c++) {
-      const idx = t * numClasses + c;
-      const val = logits[idx];
-      if (val > maxVal) {
-        maxVal = val;
-        maxIdx = c;
-      }
-    }
-    if (maxIdx !== 0 && maxIdx !== lastCharIdx) {
-      decoded += CHARS[maxIdx] || "";
-    }
-    lastCharIdx = maxIdx;
-  }
-  return decoded;
-}
+
 
 // Visual Mapping Candidates
 const VISUAL_MAPS = {
@@ -1447,7 +1199,7 @@ async function main() {
       const height = rawImage.height;
 
       const binarizedBuffer = binarizeImageData(width, height, rawImage.data);
-      const globalBbox = findGlobalBoundingBox(width, height, binarizedBuffer, 2);
+      const globalBbox = findGlobalBoundingBox(binarizedBuffer, width, height, 2);
       const wordBoxes = segmentLineIntoWords(width, height, binarizedBuffer, globalBbox, 1);
       console.log(`[Segmentation] Split line into ${wordBoxes.length} word box(es)`);
 
@@ -1466,7 +1218,7 @@ async function main() {
           let preMatchedGeneric = null;
           let highestConfidence = 0;
           for (const box of wordBoxes) {
-            const subBuffer = extractSubImage(width, binarizedBuffer, box);
+            const subBuffer = extractSubImage(binarizedBuffer, width, box);
             
             const floatL = preprocessLetterbox(box.w, box.h, subBuffer, 512, 128);
             const tensorL = new ort.Tensor('float32', floatL, [1, 1, 128, 512]);
@@ -1494,7 +1246,7 @@ async function main() {
           const decodedWords = [];
           for (let wIdx = 0; wIdx < wordBoxes.length; wIdx++) {
             const box = wordBoxes[wIdx];
-            const subBuffer = extractSubImage(width, binarizedBuffer, box);
+            const subBuffer = extractSubImage(binarizedBuffer, width, box);
 
             const floatL = preprocessLetterbox(box.w, box.h, subBuffer, 512, 128);
             const tensorL = new ort.Tensor('float32', floatL, [1, 1, 128, 512]);
@@ -1537,7 +1289,7 @@ async function main() {
         let preMatchedGeneric = null;
         let highestConfidence = 0;
         for (const box of wordBoxes) {
-          const subBuffer = extractSubImage(width, binarizedBuffer, box);
+          const subBuffer = extractSubImage(binarizedBuffer, width, box);
           
           const floatL = preprocessLetterbox(box.w, box.h, subBuffer, 512, 128);
           const tensorL = new ort.Tensor('float32', floatL, [1, 1, 128, 512]);
@@ -1565,7 +1317,7 @@ async function main() {
         const decodedWords = [];
         for (let wIdx = 0; wIdx < wordBoxes.length; wIdx++) {
           const box = wordBoxes[wIdx];
-          const subBuffer = extractSubImage(width, binarizedBuffer, box);
+          const subBuffer = extractSubImage(binarizedBuffer, width, box);
 
           const floatL = preprocessLetterbox(box.w, box.h, subBuffer, 512, 128);
           const tensorL = new ort.Tensor('float32', floatL, [1, 1, 128, 512]);

@@ -1,4 +1,7 @@
-// src/workers/db.worker.ts
+/**
+ * @file db.worker.ts
+ * Web worker handling database initialization, query execution, and drug guideline lookups.
+ */
 import * as Comlink from 'comlink';
 // @ts-ignore
 import sqlite3InitModuleRaw from '@sqlite.org/sqlite-wasm';

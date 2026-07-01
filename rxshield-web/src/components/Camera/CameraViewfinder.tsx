@@ -4,6 +4,10 @@ import { captureAndCropFrame, binarizeImageData } from './cameraUtils';
 import { useWorkflowState } from '@/context/WorkflowStateContext';
 import { Camera, RefreshCw, AlertTriangle } from 'lucide-react';
 
+/**
+ * CameraViewfinder component manages the live camera viewport feed, frame capturing,
+ * image binarization preview, and workflow routing.
+ */
 export const CameraViewfinder: React.FC = () => {
   const { stream, error, startStream, stopStream } = useCameraHardware();
   const { state, runInference, resetWorkflow } = useWorkflowState();
@@ -29,7 +33,6 @@ export const CameraViewfinder: React.FC = () => {
     }
   }, [stream, isCaptured]);
 
-  // If workflow is reset externally (e.g. from header Reset), restart the camera stream
   useEffect(() => {
     if (state.phase === 'IDLE' && isCaptured) {
       setIsCaptured(false);
@@ -38,7 +41,6 @@ export const CameraViewfinder: React.FC = () => {
     }
   }, [state.phase, isCaptured, startStream]);
 
-  // Draw binarized crop to preview canvas once it mounts in the DOM
   useEffect(() => {
     if (binarizedCrop && previewCanvasRef.current) {
       const canvas = previewCanvasRef.current;
@@ -51,27 +53,27 @@ export const CameraViewfinder: React.FC = () => {
     }
   }, [binarizedCrop]);
 
+  /**
+   * Captures and crops the active camera frame based on the scan mode,
+   * performs a fast binarization for UI preview, and dispatches the raw
+   * pixel buffer to the hybrid OCR worker thread.
+   */
   const handleCapture = () => {
     if (!videoRef.current || !hiddenCanvasRef.current) return;
 
-    // 1. Capture and crop center text strip/block depending on scanMode
     const cropRatioY = scanMode === 'line' ? 0.40 : 0.25;
     const cropRatioH = scanMode === 'line' ? 0.20 : 0.50;
     const rawCrop = captureAndCropFrame(videoRef.current, hiddenCanvasRef.current, cropRatioY, cropRatioH);
     if (!rawCrop) return;
 
-    // 2. Stop camera stream immediately (Static Capture Economy)
     stopStream();
     setIsCaptured(true);
 
-    // 3. Clone the raw pixel buffer for the background worker track
     const rawDataForWorker = new Uint8ClampedArray(rawCrop.data);
 
-    // 4. Apply high-speed static threshold binarization for UI preview only (prevents UI freeze)
     const binarized = binarizeImageData(rawCrop, 128);
     setBinarizedCrop(binarized);
 
-    // Convert binarized ImageData to base64 Data URL to pass to context results view
     let binarizedDataUrl = '';
     try {
       const tempCanvas = document.createElement('canvas');
@@ -86,7 +88,6 @@ export const CameraViewfinder: React.FC = () => {
       console.warn('Failed to convert canvas to data URL for preview:', e);
     }
 
-    // 5. Send raw pixel buffer to hybrid OCR parser with the binarized thumbnail URL
     runInference(rawDataForWorker, binarized.width, binarized.height, scanMode, binarizedDataUrl);
   };
 
@@ -99,14 +100,12 @@ export const CameraViewfinder: React.FC = () => {
 
   return (
     <div className="flex-1 flex flex-col justify-between overflow-hidden">
-      {/* Title & Toggle Header */}
       <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-3 shrink-0">
         <span className="text-xs font-bold text-slate-800 uppercase flex items-center gap-1.5 tracking-wider">
           <Camera className="w-4 h-4 text-trust-teal" />
           On-Device Document Capture
         </span>
         
-        {/* Premium Segmented Slider Mode Switcher */}
         <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200/50">
           <button
             onClick={() => setScanMode('line')}
@@ -133,17 +132,14 @@ export const CameraViewfinder: React.FC = () => {
         </div>
       </div>
 
-      {/* Viewport Box */}
       <div className="flex-1 bg-slate-950 relative flex items-center justify-center overflow-hidden min-h-[180px] rounded-xl border border-slate-800 shadow-inner">
         {error ? (
-          // Error Panel
           <div className="p-5 flex flex-col items-center justify-center text-center text-alert-red animate-fade-in">
             <AlertTriangle className="w-8 h-8 mb-2" />
             <span className="text-xs font-bold uppercase tracking-wider mb-1">Camera Initialization Fault</span>
             <p className="text-[11px] text-slate-400 max-w-[240px] leading-relaxed">{error}</p>
           </div>
         ) : !isCaptured ? (
-          // Video Live Stream
           <>
             <video
               ref={videoRef}
@@ -152,21 +148,18 @@ export const CameraViewfinder: React.FC = () => {
               muted
               className="w-full h-full object-cover"
             />
-            {/* SVG Alignment Bounding Box reticle */}
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-              {/* Overlay with transparent center strip */}
               <div className="absolute inset-0 flex flex-col">
                 <div 
                   style={{ flexGrow: scanMode === 'line' ? 4 : 2.5 }} 
                   className="bg-black/50 transition-all duration-300" 
-                /> {/* Top dim */}
+                />
                 <div 
                   style={{ height: scanMode === 'line' ? '20%' : '50%' }} 
                   className="flex shrink-0 transition-all duration-300 animate-fade-in"
-                > {/* Middle Row */}
-                  <div className="w-6 bg-black/50" /> {/* Left dim */}
+                >
+                  <div className="w-6 bg-black/50" />
                   <div className="flex-1 border-y-2 border-dashed border-red-500 bg-red-500/5 relative">
-                    {/* Corner Reticles */}
                     <div className="absolute top-0 left-0 w-3 h-3 border-t-2 border-l-2 border-red-500" />
                     <div className="absolute top-0 right-0 w-3 h-3 border-t-2 border-r-2 border-red-500" />
                     <div className="absolute bottom-0 left-0 w-3 h-3 border-b-2 border-l-2 border-red-500" />
@@ -177,12 +170,12 @@ export const CameraViewfinder: React.FC = () => {
                         : "Position Prescription Block Here"}
                     </span>
                   </div>
-                  <div className="w-6 bg-black/50" /> {/* Right dim */}
+                  <div className="w-6 bg-black/50" />
                 </div>
                 <div 
                   style={{ flexGrow: scanMode === 'line' ? 4 : 2.5 }} 
                   className="bg-black/50 transition-all duration-300" 
-                /> {/* Bottom dim */}
+                />
               </div>
             </div>
             
@@ -190,7 +183,6 @@ export const CameraViewfinder: React.FC = () => {
               STREAM: ACTIVE
             </div>
 
-            {/* Floating Tactile Shutter Button */}
             <button
               onClick={handleCapture}
               disabled={!stream || state.isProcessing}
@@ -201,7 +193,6 @@ export const CameraViewfinder: React.FC = () => {
             </button>
           </>
         ) : (
-          // Static Binarized Preview
           <div className="w-full h-full flex flex-col items-center justify-center p-4 bg-slate-900 animate-fade-in">
             <span className="text-[9px] font-mono font-bold text-slate-400 uppercase mb-2.5">Binarized Character Matrix</span>
             <div className="border border-slate-700 bg-white p-1 rounded shadow-md flex justify-center">
@@ -211,7 +202,6 @@ export const CameraViewfinder: React.FC = () => {
               Dimensions: {previewCanvasRef.current?.width || 0}x{previewCanvasRef.current?.height || 0} | Gray-1bit
             </span>
 
-            {/* Floating Tactile Retake Button */}
             <button
               onClick={handleRetake}
               disabled={state.isProcessing}
@@ -233,7 +223,6 @@ export const CameraViewfinder: React.FC = () => {
         )}
       </div>
 
-      {/* Hidden processing canvas */}
       <canvas ref={hiddenCanvasRef} className="hidden" />
     </div>
   );

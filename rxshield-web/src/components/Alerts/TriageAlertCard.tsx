@@ -15,17 +15,23 @@ import {
   Database
 } from 'lucide-react';
 
+/**
+ * TriageAlertCard component displays the results and clinical validation feedback
+ * for the scanned prescription, including warnings, overrides, and final safety verdicts.
+ */
 export const TriageAlertCard: React.FC = () => {
   const { state, resetWorkflow } = useWorkflowState();
   const { phase, finalVerdict, errorMsg, validationData, extractedTokens } = state;
   const [showSafetyReport, setShowSafetyReport] = useState<boolean>(false);
   const [confirmSuccess, setConfirmSuccess] = useState<boolean>(false);
 
-  // Check if typo correction occurred
+  /**
+   * Scans extraction logs to verify if visual typo correction was applied
+   * to known ambiguous drug names (e.g., amosil -> amoxil).
+   */
   const isAutoCorrected = () => {
     if (!validationData || !validationData.genericName) return false;
     
-    // Scan logs to check if a typo was corrected
     const extractionLog = state.logs.find(l => l.includes('Character extraction complete'));
     if (extractionLog) {
       const match = extractionLog.match(/: "([^"]+)"/);
@@ -39,6 +45,9 @@ export const TriageAlertCard: React.FC = () => {
     return false;
   };
 
+  /**
+   * Retrieves the raw OCR output string from worker logs.
+   */
   const getRawOcrString = () => {
     const extractionLog = state.logs.find(l => l.includes('Character extraction complete'));
     if (extractionLog) {
@@ -51,7 +60,6 @@ export const TriageAlertCard: React.FC = () => {
   };
 
   const handleConfirm = () => {
-    // If standard pass, we write standard approval to DB
     setConfirmSuccess(true);
     setTimeout(() => {
       setConfirmSuccess(false);
@@ -120,7 +128,6 @@ export const TriageAlertCard: React.FC = () => {
           </div>
         ) : finalVerdict ? (
           <div className="w-full flex flex-col gap-4 text-left animate-fade-in">
-            {/* Top Visual Context Thumbnail */}
             {state.capturedImageUri && (
               <div className="flex items-center gap-3 bg-slate-50 border border-slate-100 rounded-xl p-3 shadow-sm shrink-0">
                 <div className="w-16 h-10 bg-white border border-slate-200 rounded-lg overflow-hidden shrink-0 shadow-sm flex items-center justify-center">
@@ -133,9 +140,7 @@ export const TriageAlertCard: React.FC = () => {
               </div>
             )}
 
-            {/* Verification Card Hub */}
             <div className="border border-slate-100 rounded-xl p-5 bg-white shadow-sm space-y-4">
-              {/* Verified Compound Title */}
               <div className="flex items-center justify-between border-b border-slate-100 pb-3 flex-wrap gap-2">
                 <div>
                   <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider block">Verified Compound</span>
@@ -157,7 +162,6 @@ export const TriageAlertCard: React.FC = () => {
                 </div>
               </div>
 
-              {/* Differentiate OCR vs Database */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div className="bg-slate-50 border border-slate-100 p-3 rounded-lg">
                   <span className="text-[9px] text-slate-400 font-extrabold uppercase tracking-wide block mb-1">OCR Read Text</span>
@@ -173,7 +177,6 @@ export const TriageAlertCard: React.FC = () => {
                 </div>
               </div>
 
-              {/* Dosage and Frequency Focus */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="bg-slate-50 border border-slate-100 p-3.5 rounded-xl text-center">
                   <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider block mb-0.5">Verified Daily Dose</span>
@@ -189,7 +192,6 @@ export const TriageAlertCard: React.FC = () => {
                 </div>
               </div>
 
-              {/* Safety Triage Matrix */}
               <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 space-y-3.5">
                 <div className="flex justify-between items-center">
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Clinical Safety Check</span>
@@ -213,7 +215,6 @@ export const TriageAlertCard: React.FC = () => {
                   )}
                 </div>
 
-                {/* Conflict Alert Tag */}
                 {finalVerdict.verdict === 'DANGER' && (
                   <div className="bg-alert-red/10 border border-alert-red/20 text-alert-red text-xs p-3.5 rounded-xl font-bold flex items-start gap-2.5 leading-relaxed">
                     <AlertOctagon className="w-4 h-4 shrink-0 mt-0.5 text-alert-red" />
@@ -233,7 +234,6 @@ export const TriageAlertCard: React.FC = () => {
                   </div>
                 )}
 
-                {/* Safety Report Dropdown */}
                 <div className="border border-slate-100 rounded-xl bg-white overflow-hidden">
                   <button
                     onClick={() => setShowSafetyReport(!showSafetyReport)}
@@ -259,15 +259,12 @@ export const TriageAlertCard: React.FC = () => {
               </div>
             </div>
 
-            {/* Checklist Validation Gate for Warnings */}
             {finalVerdict.verdict === 'WARNING' && (
               <DemographicChecklist validationData={validationData} />
             )}
 
-            {/* Bottom Decision Action CTAs */}
             <div className="flex flex-col sm:flex-row items-center gap-2 mt-2 w-full">
               {finalVerdict.verdict !== 'DANGER' ? (
-                // Only show Confirm if not strictly locked out by Danger severity
                 finalVerdict.verdict === 'PASS' ? (
                   <button
                     onClick={handleConfirm}
@@ -277,8 +274,6 @@ export const TriageAlertCard: React.FC = () => {
                     Confirm & Dispatch Dosage
                   </button>
                 ) : (
-                  // For WARNING, the DemographicChecklist component itself renders the "Approve & Dispatch" button inside it.
-                  // We show a placeholder warning instructions note here instead.
                   <div className="text-[10px] text-slate-500 bg-slate-50 border border-slate-100/70 p-3 rounded-lg text-center w-full">
                     Complete the Clinical Override Validation Gate Checklist above to authorize dispensing.
                   </div>

@@ -174,6 +174,10 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
+  /**
+   * Executes the full pipeline including image binarization, hybrid OCR,
+   * candidate matching, drug-drug interaction validation, and dosage triage.
+   */
   const runInference = async (
     rgbaBuffer: Uint8ClampedArray,
     width: number,
@@ -190,6 +194,10 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
     setLogs((prev) => [...prev, `[App] Starting hybrid OCR parser on frame ${width}x${height}...`]);
     setPhase('EXTRACTION');
 
+    /**
+     * Evaluates the extracted text from OCR tracks, runs fuzzy autocorrection
+     * against candidate database matches, checks dosing ranges and drug-drug interactions.
+     */
     const evaluateExtractionResult = async (text: string, source: 'local' | 'cloud') => {
       setLogs((prev) => [
         ...prev,
@@ -199,15 +207,13 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
       const tokens = text.split(/\s+/).filter(Boolean);
       setExtractedTokens(tokens.length > 0 ? tokens : ['[Empty text]']);
 
-      // Step 2: VALIDATION
       setPhase('VALIDATION');
       setLogs((prev) => [...prev, `[App] Querying SQLite with matched candidates...`]);
 
-      // Split text by lines to support multi-line validation
       const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
       const matches = await Promise.all(lines.map((line) => matchDrug(line)));
 
-      // Delay 500ms for UX transition showing raw tokens before auto-correcting them
+      // Delay 500ms to allow visual transition of raw tokens before applying corrections
       await new Promise((resolve) => setTimeout(resolve, 500));
 
       let correctedTokens = [...tokens];
@@ -238,7 +244,6 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
       }
       setExtractedTokens(correctedTokens);
 
-      // Step 3: COMPLETE (safety rule evaluation)
       let verdict = 'PASS';
       let messages: string[] = [];
       let citations: string[] = [];
@@ -248,7 +253,6 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
       let combinedDailyDoseMg = 0;
       let combinedMaxDailyDoseMg = 0;
 
-      // 1. Evaluate each line individually for single-drug rules (dosages, gates)
       for (let idx = 0; idx < lines.length; idx++) {
         const match = matches[idx];
         const lineText = lines[idx];
@@ -269,8 +273,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
           if (d.requires_renal_check === 1) combinedRequiresRenalCheck = 1;
           citations.push(d.guideline_citation || 'NSTG Section 3.1, Page 45');
 
-          // Parse daily dose and check limits
-          let doseMg = d.max_single_dose_mg || 0; // fallback
+          let doseMg = d.max_single_dose_mg || 0;
           let matchesDose = lineTextLower.match(/(\d+(?:\.\d+)?)\s*mg/);
           if (!matchesDose) {
             matchesDose = lineTextLower.match(/(\d+(?:\.\d+)?)/);
@@ -279,7 +282,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
             doseMg = parseFloat(matchesDose[1]);
           }
 
-          // Determine frequency using the robust visual equivalence mapping
+          // Determine frequency using visual equivalence character mappings
           let frequency = 1;
           const hasBD = lineWords.some((w) =>
             ['bd', 'bid', 'twice', 'bl', 'b1', 'bo', 'bd5', 'rfy', '8l'].includes(w)
@@ -321,7 +324,6 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       }
 
-      // 2. Dynamically check drug-drug interactions via SQLite queries
       const matchedDrugs = matches.filter((m) => m && m.matched && m.data);
       for (let i = 0; i < matchedDrugs.length; i++) {
         for (let j = i + 1; j < matchedDrugs.length; j++) {
@@ -329,7 +331,6 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
           const atcB = matchedDrugs[j].data.atc_code;
           if (!atcA || !atcB) continue;
 
-          // Query SQLite to check if there is an interaction entry
           const interactionRows = await query(
             'SELECT severity, risk_description FROM drug_interactions WHERE (atc_code_a = ? AND atc_code_b = ?) OR (atc_code_a = ? AND atc_code_b = ?)',
             [atcA, atcB, atcB, atcA]
@@ -361,7 +362,6 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
         nstgMaxDailyDoseMg: combinedMaxDailyDoseMg,
       });
 
-      // Combine messages and citations for the final verdict
       const message = messages.join(' | ');
       const citation = Array.from(new Set(citations)).join(' ; ');
 

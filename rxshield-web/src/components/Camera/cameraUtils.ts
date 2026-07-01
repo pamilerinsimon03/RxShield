@@ -1,6 +1,10 @@
 /**
  * Serializes and crops a video frame snapshot into a horizontal line strip.
- * Maps relative offsets to coordinates on the native video resolution.
+ * Maps relative offsets to coordinates on the native video resolution by:
+ * 1. Calculating object-cover scale factor and scaled dimensions.
+ * 2. Determining centering offsets of the scaled video inside container.
+ * 3. Defining the crop box in container coordinates (e.g. reticle strip).
+ * 4. Mapping container coordinates back to native video space and clamping to boundaries.
  */
 export const captureAndCropFrame = (
   videoEl: HTMLVideoElement,
@@ -18,33 +22,24 @@ export const captureAndCropFrame = (
 
   if (!vw || !vh || !cw || !ch) return null;
 
-  // 1. Calculate the scale factor of object-cover
-  // object-cover scales the video to completely fill the container while preserving aspect ratio
   const scale = Math.max(cw / vw, ch / vh);
 
-  // 2. Calculate the scaled dimensions of the video stream
   const sw = vw * scale;
   const sh = vh * scale;
 
-  // 3. Calculate offsets of the scaled video inside the container (centered)
   const offsetX = (cw - sw) / 2;
   const offsetY = (ch - sh) / 2;
 
-  // 4. In container coordinate space, define the red reticle crop box:
-  // - Horizontal bounds: centered, bounded by 32px (w-8) side bars
   const rectX = 32;
   const rectW = Math.max(10, cw - 64);
-  // - Vertical bounds: relative to container height
   const rectY = ch * cropRatioY;
   const rectH = ch * cropRatioH;
 
-  // 5. Map container coordinates back to native video coordinates
   const videoX = Math.floor((rectX - offsetX) / scale);
   const videoW = Math.floor(rectW / scale);
   const videoY = Math.floor((rectY - offsetY) / scale);
   const videoH = Math.floor(rectH / scale);
 
-  // 6. Clamp coordinates to valid video boundaries
   const clampedX = Math.max(0, Math.min(vw - 1, videoX));
   const clampedY = Math.max(0, Math.min(vh - 1, videoY));
   const clampedW = Math.max(1, Math.min(vw - clampedX, videoW));
@@ -53,7 +48,6 @@ export const captureAndCropFrame = (
   canvasEl.width = clampedW;
   canvasEl.height = clampedH;
 
-  // Draw crop sub-rectangle onto hidden canvas
   ctx.drawImage(videoEl, clampedX, clampedY, clampedW, clampedH, 0, 0, clampedW, clampedH);
   return ctx.getImageData(0, 0, clampedW, clampedH);
 };
@@ -68,7 +62,6 @@ export const computeOtsuThreshold = (imgData: ImageData): number => {
   const len = data.length;
   const histogram = new Array(256).fill(0);
   
-  // 1. Compute histogram of grayscale values
   for (let i = 0; i < len; i += 4) {
     const r = data[i];
     const g = data[i + 1];
@@ -77,10 +70,8 @@ export const computeOtsuThreshold = (imgData: ImageData): number => {
     histogram[gray]++;
   }
 
-  // Total number of pixels
   const total = len / 4;
 
-  // Calculate sum of all intensity values
   let sum = 0;
   for (let i = 0; i < 256; i++) {
     sum += i * histogram[i];
@@ -104,7 +95,7 @@ export const computeOtsuThreshold = (imgData: ImageData): number => {
     const mB = sumB / wB;
     const mF = (sum - sumB) / wF;
 
-    // Between-class variance
+    // Between-class variance calculation
     const varBetween = wB * wF * (mB - mF) * (mB - mF);
 
     if (varBetween > varMax) {
@@ -116,11 +107,6 @@ export const computeOtsuThreshold = (imgData: ImageData): number => {
   return threshold;
 };
 
-/**
- * Performs grayscale luma calculation and dynamic or static threshold binarization.
- * Converts raw color bytes directly to high-contrast black-and-white.
- * Formula: Y = 0.299R + 0.587G + 0.114B
- */
 /**
  * Performs local adaptive thresholding using the Bradley-Roth algorithm.
  * Excellent for separating ink from paper under uneven lighting and shadow gradients.
@@ -137,7 +123,7 @@ export const adaptiveThresholdBradley = (
   const gray = new Uint8Array(w * h);
   const integral = new Int32Array(w * h);
 
-  // 1. Compute grayscale and integral image
+  // Compute grayscale and integral image
   for (let y = 0; y < h; y++) {
     let sum = 0;
     for (let x = 0; x < w; x++) {
@@ -157,7 +143,6 @@ export const adaptiveThresholdBradley = (
     }
   }
 
-  // 2. Perform thresholding
   const s2 = Math.floor(windowSize / 2);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {

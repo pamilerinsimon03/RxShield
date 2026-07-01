@@ -1,6 +1,9 @@
 import * as Comlink from 'comlink';
 import type { VisionWorkerApi } from '@/workers/vision.worker';
 
+/**
+ * OcrService coordinates the lifecycle and execution of the client-side ONNX vision Web Worker.
+ */
 export class OcrService {
   private worker: Worker | null = null;
   private api: Comlink.Remote<VisionWorkerApi> | null = null;
@@ -23,6 +26,9 @@ export class OcrService {
     }
   }
 
+  /**
+   * Initializes the ONNX model inside the worker thread.
+   */
   public async init(): Promise<boolean> {
     if (!this.api) {
       this.initializeWorker();
@@ -33,6 +39,9 @@ export class OcrService {
     return false;
   }
 
+  /**
+   * Executes OCR parsing on the provided RGBA buffer.
+   */
   public async runOcr(
     rgbaBuffer: Uint8ClampedArray,
     width: number,
@@ -52,6 +61,9 @@ export class OcrService {
     );
   }
 
+  /**
+   * Caches drug names, generic mappings, and safety protocols in the worker state.
+   */
   public async setDrugDb(
     allDrugNames: string[],
     drugToGenericMap: Record<string, string>,
@@ -65,6 +77,9 @@ export class OcrService {
     }
   }
 
+  /**
+   * Terminates the active vision worker thread.
+   */
   public terminate(): void {
     if (this.worker) {
       this.worker.terminate();

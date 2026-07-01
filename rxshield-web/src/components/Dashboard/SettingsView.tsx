@@ -2,6 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { useWorkflowState } from '@/context/WorkflowStateContext';
 import { Settings, Shield, Cpu, RefreshCw, ToggleLeft, ToggleRight, Check } from 'lucide-react';
 
+/**
+ * SettingsView component allows clinicians to customize safety triage thresholds,
+ * local vs cloud OCR priority, synchronization, and run developer simulations.
+ */
 export const SettingsView: React.FC = () => {
   const { state, runMockInference, triggerCrash, resetWorkflow } = useWorkflowState();
   const [threshold, setThreshold] = useState<number>(75);
@@ -11,7 +15,6 @@ export const SettingsView: React.FC = () => {
   const [savedSuccess, setSavedSuccess] = useState<boolean>(false);
 
   useEffect(() => {
-    // Load settings from localStorage if available
     const savedThreshold = localStorage.getItem('settings_safety_threshold');
     const savedOcr = localStorage.getItem('settings_ocr_priority');
     const savedDemo = localStorage.getItem('settings_demographic_override');
@@ -35,7 +38,6 @@ export const SettingsView: React.FC = () => {
 
   return (
     <div className="flex-1 flex flex-col bg-white border border-slate-200 rounded-xl p-5 shadow-sm overflow-hidden h-full">
-      {/* Header */}
       <div className="flex items-start gap-2.5 mb-4 shrink-0 border-b border-slate-100 pb-3.5">
         <div className="w-8 h-8 bg-trust-teal/10 rounded-lg flex items-center justify-center text-trust-teal mt-0.5 shrink-0">
           <Settings className="w-4.5 h-4.5" />
@@ -50,9 +52,7 @@ export const SettingsView: React.FC = () => {
         </div>
       </div>
 
-      {/* Settings Grid */}
       <div className="flex-1 overflow-y-auto space-y-4 pr-1">
-        {/* Card 1: Safety & Dosing parameters */}
         <div className="border border-slate-100 rounded-xl p-4 bg-slate-50/50 space-y-4">
           <div className="flex items-center gap-1.5 border-b border-slate-100 pb-2 mb-2">
             <Shield className="w-4 h-4 text-trust-teal shrink-0" />
@@ -101,7 +101,6 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Card 2: Edge OCR Priority */}
         <div className="border border-slate-100 rounded-xl p-4 bg-slate-50/50 space-y-4">
           <div className="flex items-center gap-1.5 border-b border-slate-100 pb-2 mb-2">
             <Cpu className="w-4 h-4 text-trust-teal shrink-0" />
@@ -142,7 +141,6 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Card 3: sync options */}
         <div className="border border-slate-100 rounded-xl p-4 bg-slate-50/50 space-y-3">
           <div className="flex items-center gap-1.5 border-b border-slate-100 pb-2 mb-1">
             <RefreshCw className="w-4 h-4 text-trust-teal shrink-0" />
@@ -173,7 +171,6 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Card 4: Developer Diagnostics & Simulation */}
         <div className="border border-dashed border-slate-300 rounded-xl p-4 bg-slate-50/20 space-y-3.5">
           <div className="flex items-center gap-1.5 border-b border-slate-100 pb-2 mb-1">
             <Cpu className="w-4 h-4 text-slate-500 shrink-0" />
@@ -210,7 +207,6 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Save Button */}
         <div className="pt-2 shrink-0">
           <button
             onClick={handleSave}

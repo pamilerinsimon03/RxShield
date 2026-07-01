@@ -1,5 +1,7 @@
-// src/workers/inference.worker.js
-
+/**
+ * Message handler for background drug verification inference tasks.
+ * Processes simulated extraction, validation, and completion steps.
+ */
 self.onmessage = function (event) {
   try {
     const request = event.data;
@@ -75,16 +77,13 @@ self.onmessage = function (event) {
         };
       }
 
-      // Step 1: EXTRACTION
       self.postMessage({
         status: 'SUCCESS',
         step: 'EXTRACTION',
         data: extractionData
       });
 
-      // Simulate a short processing delay to demonstrate progressive rendering
       setTimeout(() => {
-        // Step 2: VALIDATION
         self.postMessage({
           status: 'SUCCESS',
           step: 'VALIDATION',
@@ -92,7 +91,6 @@ self.onmessage = function (event) {
         });
 
         setTimeout(() => {
-          // Step 3: COMPLETE
           self.postMessage({
             status: 'SUCCESS',
             step: 'COMPLETE',

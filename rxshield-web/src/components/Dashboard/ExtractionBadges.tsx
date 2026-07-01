@@ -2,14 +2,21 @@ import React from 'react';
 import { useWorkflowState } from '@/context/WorkflowStateContext';
 import { Tag } from 'lucide-react';
 
+/**
+ * ExtractionBadges component displays the pill tray of tokens extracted
+ * by the prescription scanning workflow.
+ */
 export const ExtractionBadges: React.FC = () => {
   const { state } = useWorkflowState();
   const { phase, extractedTokens } = state;
 
   const isLoading = phase === 'EXTRACTION';
 
+  /**
+   * Identifies candidate drug names by checking that the token has no digits
+   * and is not a known frequency code.
+   */
   const isDrugName = (token: string) => {
-    // If it contains no digits and isn't a known frequency keyword, treat it as a drug name
     const cleanToken = token.trim().toLowerCase();
     const isFreq = ['tds', 'bd', 'qds', 'daily', 'bid', 'tid', 'qid', 'twice', 'three', 'four'].includes(cleanToken);
     const hasDigits = /\d/.test(cleanToken);

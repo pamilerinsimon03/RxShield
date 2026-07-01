@@ -65,6 +65,9 @@ const convertRgbaToBase64 = (
   return dataUrl.split(',')[1];
 };
 
+/**
+ * Parses a line of text into its distinct components: medication name, dosage, and frequency.
+ */
 const parseLineComponents = (line: string): { medication: string; dosage: string; frequency: string } => {
   const tokens = line.split(/\s+/).filter(Boolean);
   let dosage = '';
@@ -74,13 +77,11 @@ const parseLineComponents = (line: string): { medication: string; dosage: string
   for (const token of tokens) {
     const lower = token.toLowerCase();
     
-    // Check if it matches a frequency pattern
     const isFreq = ['bd', 'bid', 'twice', 'bl', 'b1', 'bo', 'bd5', 'rfy', '8l',
                     'tds', 'tid', 'three', 'td5', 't18', 'tds5', 'td', 'tles', 'te', 't5',
                     'qds', 'qid', 'four', 'qd5',
                     'daily', 'waily', 'darly', 'tils', 'warly', 'om', 'nocte', 'mane'].includes(lower);
                     
-    // Check if it matches a dosage pattern (starts with a digit or ends with mg/g/gm/ml)
     const isDose = /^\d+(?:\.\d+)?\s*(?:mg|g|gm|ml)?$/i.test(token) || 
                    /^\d+(?:\.\d+)?$/i.test(token) ||
                    /^(?:mg|g|gm|ml)$/i.test(token);
@@ -101,6 +102,10 @@ const parseLineComponents = (line: string): { medication: string; dosage: string
   };
 };
 
+/**
+ * Resolves disagreement between local OCR and cloud VLM parsing by comparing database match
+ * states. Cloud VLM results are prioritized for dosage parameters.
+ */
 const resolveLineDisagreement = async (
   localLine: string,
   cloudLine: string,
@@ -137,14 +142,12 @@ const resolveLineDisagreement = async (
     finalMedication = cloudParts.medication || localParts.medication;
   }
 
-  // Resolve Frequency
   if (localParts.frequency && cloudParts.frequency) {
     finalFrequency = cloudParts.frequency;
   } else {
     finalFrequency = cloudParts.frequency || localParts.frequency;
   }
 
-  // Resolve Dosage (Cloud VLM always overrides Local dosage when online)
   if (localParts.dosage && cloudParts.dosage) {
     finalDosage = cloudParts.dosage;
   } else {
@@ -185,6 +188,10 @@ const resolveHybridLines = async (
   return resolvedLines.join('\n');
 };
 
+/**
+ * Hook to manage the hybrid parsing workflow, coordinating online/offline states,
+ * and performing a race between local ONNX OCR and cloud VLM endpoints.
+ */
 export const useHybridPrescriptionParser = ({ ocrServiceRef, appendLog, matchDrug }: ParserOptions) => {
   const parsePrescription = useCallback(
     async (
@@ -194,12 +201,10 @@ export const useHybridPrescriptionParser = ({ ocrServiceRef, appendLog, matchDru
       scanMode: 'line' | 'block' = 'line',
       onRefined?: (result: HybridParseResult) => void
     ): Promise<HybridParseResult> => {
-      // 1. Instantly check connectivity
       appendLog('[Orchestrator] Probing connection speed and reachability...');
       const isOnline = await checkOnlineStatus(appendLog);
       appendLog(`[Orchestrator] Network Status: ${isOnline ? 'ONLINE' : 'OFFLINE'}`);
 
-      // Helper to execute the local OCR track
       const runLocalTrack = async (): Promise<string> => {
         const ocrService = ocrServiceRef.current;
         if (!ocrService) {
@@ -213,14 +218,12 @@ export const useHybridPrescriptionParser = ({ ocrServiceRef, appendLog, matchDru
         return localRes.text || '';
       };
 
-      // If offline, bypass network completely
       if (!isOnline) {
         appendLog('[Orchestrator] Offline Mode active. Executing local track only.');
         const localText = await runLocalTrack();
         return { text: localText, source: 'local' };
       }
 
-      // 2. Online Mode: Parallel Race
       appendLog('[Orchestrator] Online Mode. Initiating parallel race...');
       const localPromise = runLocalTrack();
 
@@ -428,14 +431,12 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
           return tokens;
         };
 
-        // Try primary model (gemini-2.5-flash) first
         try {
           return await runGeminiRequest('gemini-2.5-flash', 15000);
         } catch (err) {
           appendLog(`[Cloud Track] Primary gemini-2.5-flash failed/timed out: ${err instanceof Error ? err.message : String(err)}.`);
         }
 
-        // Try Groq if key is present
         const groqApiKey = process.env.NEXT_PUBLIC_GROQ_API_KEY;
         if (groqApiKey) {
           try {
@@ -451,7 +452,7 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
       const localText = await localPromise;
 
       if (isOnline && onRefined) {
-        // Run the Cloud track asynchronously in the background so scan-to-result is instantaneous (~150ms)
+        // Run cloud refinement asynchronously to keep the UI responsive
         (async () => {
           try {
             const cloudResultText = await Promise.race([

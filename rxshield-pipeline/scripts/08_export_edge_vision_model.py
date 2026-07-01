@@ -23,7 +23,6 @@ class CRNN(nn.Module):
     def __init__(self, img_height=128, num_chars=74, hidden_size=256, num_layers=2):
         super(CRNN, self).__init__()
 
-        # CNN Feature Extractor
         self.cnn = nn.Sequential(
             nn.Conv2d(1, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(), nn.MaxPool2d(2, 2),
             nn.Conv2d(64, 128, 3, padding=1), nn.BatchNorm2d(128), nn.ReLU(), nn.MaxPool2d(2, 2),
@@ -49,10 +48,18 @@ class CRNN(nn.Module):
         return torch.nn.functional.log_softmax(output, dim=2)
 
 def main():
+    """
+    Main export workflow:
+    1. Verifies Hugging Face dataset streaming connectivity using Teklia/IAM-line.
+    2. Loads model weights (tuned check, then baseline, with HF auto-download).
+    3. Exports the network structure to ONNX format with dynamic axis layout.
+    4. Performs dynamic INT8 quantization for performance optimization.
+    5. Audits file size output against a 15MB payload size limit constraint.
+    6. Deploys the optimized edge model across the workspace boundary.
+    """
     # Bypass SSL verification for HF dataset downloading just in case
     ssl._create_default_https_context = ssl._create_unverified_context
     
-    # 1. Dataset Verification Stream
     print("Testing connectivity to Hugging Face by streaming 'Teklia/IAM-line'...")
     try:
         dataset = load_dataset("Teklia/IAM-line", split="train", streaming=True)
@@ -67,9 +74,7 @@ def main():
     except Exception as e:
         print(f"Dataset stream connection test failed: {e}")
         # Note: If streaming fails due to proxy constraints, we can still proceed with local model compilation.
-        # However, we print it out clearly.
         
-    # 2. Load PyTorch model weights (with automatic fallback download)
     tuned_path = "best_model_tuned.pth"
     if os.path.exists(tuned_path):
         checkpoint_path = tuned_path
@@ -104,13 +109,11 @@ def main():
     num_chars = len(char_mapper.chars) if char_mapper else 74
     print(f"Loaded epoch {checkpoint.get('epoch')}, val CER: {checkpoint.get('val_cer')}, classes count: {num_chars + 1}")
     
-    # Reconstruct network and load weights
     model = CRNN(img_height=128, num_chars=num_chars, hidden_size=256, num_layers=2)
     model.load_state_dict(state_dict)
     model.eval()
     print("[OK] Model structure instantiated and state dictionary successfully loaded.")
     
-    # 3. Export to ONNX format
     onnx_path = "crnn.onnx"
     print(f"Exporting model to {onnx_path}...")
     # Grayscale camera crop image shape: 1 x 1 x 128 x 512
@@ -136,7 +139,6 @@ def main():
         print(f"CRITICAL ERROR: ONNX export failed: {e}")
         sys.exit(1)
         
-    # 4. Dynamic Quantization (INT8)
     quantized_path = "crnn_int8.onnx"
     print(f"Applying post-training dynamic INT8 quantization to {quantized_path}...")
     try:
@@ -150,7 +152,6 @@ def main():
         print(f"CRITICAL ERROR: Quantization matrix pass failed: {e}")
         sys.exit(1)
         
-    # 5. Volume Audit and Size Limit Verification (Cap at 15,000,000 bytes)
     size_bytes = os.path.getsize(quantized_path)
     size_mb = size_bytes / (1024 * 1024)
     limit_bytes = 15000000
@@ -161,7 +162,6 @@ def main():
         sys.exit(1)
     print("[OK] Model size lies safely within the 15MB ceiling constraint.")
     
-    # 6. Copy across workspace boundary
     dest_dir = "../rxshield-web/public/models"
     os.makedirs(dest_dir, exist_ok=True)
     dest_path = os.path.join(dest_dir, "crnn_int8.onnx")

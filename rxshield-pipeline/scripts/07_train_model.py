@@ -25,7 +25,6 @@ class CRNN(nn.Module):
     def __init__(self, img_height=128, num_chars=74, hidden_size=256, num_layers=2):
         super(CRNN, self).__init__()
 
-        # CNN Feature Extractor
         self.cnn = nn.Sequential(
             nn.Conv2d(1, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(), nn.MaxPool2d(2, 2),
             nn.Conv2d(64, 128, 3, padding=1), nn.BatchNorm2d(128), nn.ReLU(), nn.MaxPool2d(2, 2),
@@ -51,12 +50,17 @@ class CRNN(nn.Module):
         return torch.nn.functional.log_softmax(output, dim=2)
 
 class RxDataset(Dataset):
+    """
+    Dataset class for prescription images.
+    Loads and cleans target texts, applies reproducible subsetting if requested,
+    and pre-caches resized images in RAM to eliminate I/O bottlenecks.
+    Optionally applies data augmentation (rotation, brightness, contrast).
+    """
     def __init__(self, labels_file, img_dir, char_mapper, augment=False, subset_size=None):
         self.img_dir = img_dir
         self.char_mapper = char_mapper
         self.augment = augment
         
-        # Load samples
         self.samples = []
         with open(labels_file, mode='r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
@@ -64,17 +68,14 @@ class RxDataset(Dataset):
                 img_name = row.get("Images") or row.get("Image")
                 text = row.get("Text")
                 if img_name and text is not None:
-                    # Clean text to only include characters present in the mapper
                     cleaned_text = "".join([c for c in text if c in self.char_mapper.char2idx])
                     if len(cleaned_text) > 0:
                         self.samples.append((img_name, cleaned_text))
         
-        # Apply reproducible subsetting if requested
         if subset_size is not None and subset_size < len(self.samples):
             random.seed(42)
             self.samples = random.sample(self.samples, subset_size)
             
-        # Pre-cache images in memory to eliminate disk I/O and resizing bottlenecks
         filename = os.path.basename(labels_file)
         print(f"Pre-loading and resizing {len(self.samples)} images for {filename} into RAM...")
         self.cached_images = []
@@ -85,7 +86,6 @@ class RxDataset(Dataset):
                 img = img.resize((512, 128))
                 self.cached_images.append(np.array(img, dtype=np.uint8))
             except Exception:
-                # White image fallback for missing/corrupted files
                 self.cached_images.append(np.ones((128, 512), dtype=np.uint8) * 255)
             
             if (idx + 1) % 2000 == 0:
@@ -101,16 +101,12 @@ class RxDataset(Dataset):
         
         if self.augment:
             img = Image.fromarray(img_np_uint8)
-            
-            # Random rotation
             angle = random.uniform(-3, 3)
             img = img.rotate(angle, resample=Image.BILINEAR, fillcolor=255)
             
-            # Random brightness jitter
             enh_b = ImageEnhance.Brightness(img)
             img = enh_b.enhance(random.uniform(0.8, 1.2))
             
-            # Random contrast jitter
             enh_c = ImageEnhance.Contrast(img)
             img = enh_c.enhance(random.uniform(0.8, 1.2))
             
@@ -118,13 +114,10 @@ class RxDataset(Dataset):
         else:
             img_np = img_np_uint8.astype(np.float32) / 255.0
             
-        # Pixel Normalization to [-1, 1] range: (gray/255.0 - 0.5) / 0.5
         img_np = (img_np - 0.5) / 0.5
         
-        # Convert to PyTorch Tensor with channel dimension (1, H, W)
         img_tensor = torch.from_numpy(img_np).unsqueeze(0)
         
-        # Map characters to indices
         targets = [self.char_mapper.char2idx[char] for char in text]
         targets_tensor = torch.tensor(targets, dtype=torch.long)
         targets_len = torch.tensor(len(targets), dtype=torch.long)
@@ -132,11 +125,6 @@ class RxDataset(Dataset):
         return img_tensor, targets_tensor, targets_len
 
 class BalancedBatchSampler(Sampler):
-    """
-    Guarantees that each batch of size N contains exactly N/2 real images
-    and N/2 synthetic images to protect training gradients from skewness.
-    Supports fixed step length epochs with dynamic data wrapping.
-    """
     def __init__(self, real_indices, synth_indices, batch_size, num_batches=140):
         self.real_indices = list(real_indices)
         self.synth_indices = list(synth_indices)
@@ -152,12 +140,10 @@ class BalancedBatchSampler(Sampler):
         synth_ptr = 0
         for i in range(self.num_batches):
             batch = []
-            # Draw half real
             for _ in range(self.half_batch):
                 batch.append(self.real_indices[real_ptr])
                 real_ptr = (real_ptr + 1) % len(self.real_indices)
             
-            # Draw half synthetic
             for _ in range(self.half_batch):
                 batch.append(self.synth_indices[synth_ptr])
                 synth_ptr = (synth_ptr + 1) % len(self.synth_indices)
@@ -170,7 +156,6 @@ class BalancedBatchSampler(Sampler):
 def collate_fn(batch):
     images, targets, target_lengths = zip(*batch)
     images = torch.stack(images, dim=0)
-    # Pad targets with 0 (CTC blank token index)
     targets_padded = torch.nn.utils.rnn.pad_sequence(targets, batch_first=True, padding_value=0)
     target_lengths = torch.stack(target_lengths, dim=0)
     return images, targets_padded, target_lengths
@@ -192,6 +177,10 @@ def levenshtein_dist(s1, s2):
     return previous_row[-1]
 
 def evaluate(model, dataloader, char_mapper, device):
+    """
+    Evaluates the model on the given validation/test dataloader.
+    Computes average loss and average Character Error Rate (CER) using greedy decoding.
+    """
     model.eval()
     total_loss = 0
     total_cer = 0
@@ -203,13 +192,12 @@ def evaluate(model, dataloader, char_mapper, device):
             images = images.to(device)
             targets = targets.to(device)
             
-            logits = model(images) # Shape: (B, T, C)
+            logits = model(images)
             input_lengths = torch.full(size=(images.size(0),), fill_value=logits.size(1), dtype=torch.long).to(device)
             loss = criterion(logits.permute(1, 0, 2), targets, input_lengths, target_lengths)
                 
             total_loss += loss.item() * images.size(0)
             
-            # Greedy Decode for CER calculation
             logits_np = logits.cpu().numpy()
             for i in range(images.size(0)):
                 pred_indices = []
@@ -221,7 +209,6 @@ def evaluate(model, dataloader, char_mapper, device):
                     last_idx = max_idx
                     
                 pred_text = "".join([char_mapper.idx2char.get(idx, "") for idx in pred_indices])
-                
                 target_indices = targets[i][:target_lengths[i].item()].cpu().numpy()
                 target_text = "".join([char_mapper.idx2char.get(idx, "") for idx in target_indices])
                 
@@ -233,6 +220,15 @@ def evaluate(model, dataloader, char_mapper, device):
     return avg_loss, avg_cer
 
 def main():
+    """
+    Main training workflow:
+    1. Loads the baseline model checkpoint and expands the character mapper vocabulary to support '/' and '+'.
+    2. Sets up real (RxHandBD) and synthetic dataset loaders with RAM pre-loading.
+    3. Builds the CRNN model architecture, performs weight surgery to transfer baseline weights,
+       expands the fully-connected classification head, and freezes the convolutional and recurrent feature extractors.
+    4. Trains the model classification head on balanced batches using CTCLoss, evaluates
+       using Character Error Rate (CER), and saves the best checkpoint.
+    """
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     processed_dir = os.path.join(base_dir, 'data', 'processed')
     raw_dir = os.path.join(base_dir, 'data', 'raw')
@@ -240,7 +236,6 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training will run on device: {device}")
     
-    # 1. Load baseline model and expand vocabulary
     checkpoint_path = os.path.join(base_dir, "best_model.pth")
     if not os.path.exists(checkpoint_path):
         print(f"CRITICAL ERROR: Baseline weights not found at {checkpoint_path}")
@@ -252,7 +247,6 @@ def main():
     
     print(f"Baseline characters count: {len(char_mapper.chars)}")
     
-    # Expand character mapping
     original_chars = list(char_mapper.chars)
     new_symbols = ["/", "+"]
     for sym in new_symbols:
@@ -267,7 +261,6 @@ def main():
     
     print(f"Expanded characters count: {len(char_mapper.chars)} (added: {new_symbols})")
     
-    # 2. Setup datasets
     rxhandbd_dir = os.path.join(raw_dir, "RxHandBD-ML")
     real_train_labels = os.path.join(rxhandbd_dir, "Train_Label.csv")
     real_train_images = os.path.join(rxhandbd_dir, "Train_Set")
@@ -281,15 +274,10 @@ def main():
         print("CRITICAL ERROR: Real training labels or synthetic labels not found.")
         sys.exit(1)
         
-    # Dataset Loaders with RAM Pre-loading
     print("Loading real and synthetic datasets...")
     real_train_dataset = RxDataset(real_train_labels, real_train_images, char_mapper, augment=True)
     synth_train_dataset = RxDataset(synth_labels, synth_images, char_mapper, augment=False)
     test_dataset = RxDataset(real_test_labels, real_test_images, char_mapper, augment=False)
-    
-    print(f"Real training set size: {len(real_train_dataset)} crops")
-    print(f"Synthetic training set size: {len(synth_train_dataset)} crops")
-    print(f"Validation/Test set size: {len(test_dataset)} crops")
     
     class UnifiedDataset(Dataset):
         def __init__(self, real_ds, synth_ds):
@@ -313,7 +301,6 @@ def main():
     synth_indices = list(range(len(real_train_dataset), len(unified_train_dataset)))
     
     batch_size = 32
-    # Set sampler to run for exactly 140 batches per epoch (~7-9 mins on CPU)
     balanced_sampler = BalancedBatchSampler(real_indices, synth_indices, batch_size, num_batches=140)
     
     train_loader = DataLoader(
@@ -331,40 +318,31 @@ def main():
         num_workers=0
     )
     
-    # 3. Model construction & Weight transfer
     print("Constructing CRNN model architecture...")
-    num_classes = len(char_mapper.chars) # 76 classes + 1 CTC blank = 77 outputs
+    num_classes = len(char_mapper.chars)
     model = CRNN(img_height=128, num_chars=num_classes, hidden_size=256, num_layers=2)
     
-    # Load original weights (including original FC parameters for partial weights copy)
     original_state_dict = checkpoint.get("model_state_dict")
     
-    # Extract original FC weights and bias
-    orig_fc_weight = original_state_dict["fc.weight"]  # Shape: (75, 512)
-    orig_fc_bias = original_state_dict["fc.bias"]      # Shape: (75,)
+    orig_fc_weight = original_state_dict["fc.weight"]
+    orig_fc_bias = original_state_dict["fc.bias"]
     
-    # Create the expanded FC weights matrix (shape: 77, 512) and bias (shape: 77)
     new_fc_weight = torch.zeros(num_classes + 1, 512)
     new_fc_bias = torch.zeros(num_classes + 1)
     
-    # Copy original class mapping weights to preserve baseline classification ability
     new_fc_weight[:75, :] = orig_fc_weight
     new_fc_bias[:75] = orig_fc_bias
     
-    # Initialize only the 2 new classes (/ and +) with small random weights
     nn.init.normal_(new_fc_weight[75:, :], mean=0.0, std=0.01)
     new_fc_bias[75:] = 0.0
     
-    # Load feature extraction CNN and RNN weights
     filtered_state_dict = {k: v for k, v in original_state_dict.items() if not k.startswith("fc.")}
     model.load_state_dict(filtered_state_dict, strict=False)
     
-    # Assign the expanded classification head weights
     model.fc.weight.data.copy_(new_fc_weight)
     model.fc.bias.data.copy_(new_fc_bias)
     print("Transferred baseline weights and performed partial FC head expansion successfully.")
     
-    # Freeze CNN, Map2Seq, and BiLSTM layers to protect baseline features and speed up CPU calculations
     for param in model.cnn.parameters():
         param.requires_grad = False
     for param in model.map2seq.parameters():
@@ -376,9 +354,7 @@ def main():
     
     model.to(device)
     
-    # 4. Optimizer and criterion setup
     criterion = nn.CTCLoss(zero_infinity=True)
-    # Only train the active classification head parameters
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-3)
     
     epochs = 3
@@ -396,15 +372,12 @@ def main():
             
             optimizer.zero_grad()
             
-            # Forward pass
-            logits = model(images) # (B, T, C)
+            logits = model(images)
             input_lengths = torch.full(size=(images.size(0),), fill_value=logits.size(1), dtype=torch.long).to(device)
             loss = criterion(logits.permute(1, 0, 2), targets, input_lengths, target_lengths)
             
-            # Backward pass
             loss.backward()
             
-            # Gradient clipping to prevent exploding gradients
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
             
             optimizer.step()
@@ -417,11 +390,9 @@ def main():
                 
         avg_train_loss = epoch_loss / batches_processed if batches_processed > 0 else 0.0
         
-        # Validation Evaluation
         val_loss, val_cer = evaluate(model, test_loader, char_mapper, device)
         print(f"--> Epoch {epoch} Complete | Avg Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f} | Val CER: {val_cer * 100:.2f}%")
         
-        # Visual Validation Prediction Output
         print("\n--- Visual Validation Examples ---")
         model.eval()
         with torch.no_grad():

@@ -10,6 +10,9 @@ import numpy as np
 ssl._create_default_https_context = ssl._create_unverified_context
 
 def download_fonts(fonts_dir):
+    """
+    Downloads handwriting fonts from Google Fonts / GitHub repository.
+    """
     os.makedirs(fonts_dir, exist_ok=True)
     font_urls = {
         "Caveat": "https://github.com/google/fonts/raw/main/ofl/caveat/Caveat%5Bwght%5D.ttf",
@@ -41,7 +44,10 @@ def download_fonts(fonts_dir):
     return downloaded_paths
 
 def load_words(processed_dir):
-    # Load normalized EML medicines
+    """
+    Loads normalized EML medicines, NSTG generic names, and popular Nigerian brand names.
+    Strips parentheses from medicine names and returns a sorted list of unique medicines.
+    """
     medicines = set()
     eml_csv = os.path.join(processed_dir, "eml_normalized.csv")
     if os.path.exists(eml_csv):
@@ -50,11 +56,9 @@ def load_words(processed_dir):
             for row in reader:
                 med = row.get("Medicine", "").strip()
                 if med:
-                    # Strip any parentheses contents
                     med_clean = med.split("(")[0].strip()
                     medicines.add(med_clean)
                     
-    # Load NSTG generic names
     nstg_csv = os.path.join(processed_dir, "nstg_protocols_clean.csv")
     if os.path.exists(nstg_csv):
         with open(nstg_csv, 'r', encoding='utf-8') as f:
@@ -64,7 +68,6 @@ def load_words(processed_dir):
                 if med:
                     medicines.add(med)
                     
-    # Popular Nigerian brand names as manual additions
     nigerian_brands = [
         "EMZOR", "PANADOL", "AMOXIL", "AUGMENTIN", "TYLENOL", "LIPITOR", "LASIX", "LOXAGYL",
         "PEPTACID", "NEIMETH", "M&B", "ROCEPHIN", "CIPRO", "ZINNAT", "VENTOLIN", "FLAGYL",
@@ -76,6 +79,11 @@ def load_words(processed_dir):
     return sorted(list(medicines))
 
 def generate_prescription_strings(medicines):
+    """
+    Generates synthetic prescription label strings containing drug names, strengths,
+    and frequencies. Combines them with various patterns, adds combination drug names,
+    forces slash/plus symbols or frequency shorthand, and shuffles them to return exactly 9000.
+    """
     strengths = [
         "500mg", "1g", "250mg", "10mg", "40mg", "5mg", "625mg", "2gm", "100mg", 
         "7.5mg", "150mg", "120mg", "250mg/5ml", "125mg/5ml", "50mg/ml", "100mcg"
@@ -92,16 +100,13 @@ def generate_prescription_strings(medicines):
         "IPRATROPIUM + SALBUTAMOL"
     ]
     
-    # We construct a synthetic text label
     text_labels = []
     
-    # Add combinations
     for _ in range(5000):
         med = random.choice(medicines)
         strength = random.choice(strengths)
         freq = random.choice(frequencies)
         
-        # Build variations
         pattern = random.randint(1, 6)
         if pattern == 1:
             text = f"{med} {strength}"
@@ -117,7 +122,6 @@ def generate_prescription_strings(medicines):
             text = f"{strength}"
         text_labels.append(text)
         
-    # Add combination drug names
     for _ in range(2500):
         comb = random.choice(combined_drugs)
         freq = random.choice(frequencies)
@@ -127,14 +131,12 @@ def generate_prescription_strings(medicines):
             text = comb
         text_labels.append(text)
         
-    # Add raw slash and plus symbols and frequency shorthand
     for _ in range(1500):
         med = random.choice(medicines)
         strength = random.choice(strengths)
         if "/" in strength or "+" in med:
             text = f"{med} {strength}"
         else:
-            # Explicitly force a slash or plus
             text = random.choice([
                 f"{med} 500mg/5ml",
                 f"{med} + Clarithromycin",
@@ -146,36 +148,37 @@ def generate_prescription_strings(medicines):
             ])
         text_labels.append(text)
         
-    # Shuffle and trim to exactly 9000
     random.shuffle(text_labels)
     return text_labels[:9000]
 
 def add_noise_and_deform(image):
-    # Convert image to numpy array
+    """
+    Applies Gaussian/Salt-and-Pepper noise and random Gaussian blur to the input image.
+    """
     img_data = np.array(image)
     h, w = img_data.shape
     
-    # Add Gaussian/Salt-and-Pepper noise
     noise_level = random.uniform(0.005, 0.02)
     noise = np.random.randn(h, w) * 255 * noise_level
     img_data = np.clip(img_data + noise, 0, 255).astype(np.uint8)
     
-    # Return as Pillow Image
     image = Image.fromarray(img_data)
     
-    # Random Gaussian Blur
     blur_radius = random.uniform(0.3, 1.2)
     image = image.filter(ImageFilter.GaussianBlur(blur_radius))
     
     return image
 
 def render_text_image(text, font_paths, output_path):
-    # Target image size: 128x512
-    bg_color = random.randint(235, 255) # Light background
+    """
+    Renders text to a 512x128 image with a random font, size, angle, and noise.
+    Adjusts font size if the text is too wide and centers it with random offsets.
+    Handles Pillow version differences for text bounding box calculations.
+    """
+    bg_color = random.randint(235, 255)
     img = Image.new('L', (512, 128), color=bg_color)
     draw = ImageDraw.Draw(img)
     
-    # Select random font and size
     font_path = random.choice(font_paths)
     font_size = random.randint(26, 46)
     try:
@@ -183,7 +186,6 @@ def render_text_image(text, font_paths, output_path):
     except Exception:
         font = ImageFont.load_default()
         
-    # Get text size
     # Check text bbox (supported in newer Pillow)
     try:
         bbox = draw.textbbox((0, 0), text, font=font)
@@ -193,7 +195,6 @@ def render_text_image(text, font_paths, output_path):
         # Fallback for older Pillow
         text_w, text_h = draw.textsize(text, font=font)
         
-    # Adjust font size if text is too wide
     while text_w > 490 and font_size > 18:
         font_size -= 2
         try:
@@ -207,45 +208,41 @@ def render_text_image(text, font_paths, output_path):
         except Exception:
             break
             
-    # Center position with slight random offsets
     x = max(10, (512 - text_w) // 2 + random.randint(-15, 15))
     y = max(10, (128 - text_h) // 2 + random.randint(-5, 5))
     
-    # Render text in dark grey or black
     text_color = random.randint(0, 50)
     draw.text((x, y), text, font=font, fill=text_color)
     
-    # Rotate the image slightly to simulate handwritten slant
     angle = random.uniform(-4.0, 4.0)
-    # Rotate and fill background with light grey/white
     img = img.rotate(angle, resample=Image.BILINEAR, expand=False, fillcolor=bg_color)
     
-    # Add noise & blurring
     img = add_noise_and_deform(img)
     
     img.save(output_path)
 
 def main():
+    """
+    Main workflow: downloads fonts, loads drug names, generates synthetic prescription labels,
+    and renders them as images while logging output to synthetic_labels.csv.
+    """
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     fonts_dir = os.path.join(base_dir, 'data', 'raw', 'fonts')
     processed_dir = os.path.join(base_dir, 'data', 'processed')
     synthetic_out_dir = os.path.join(processed_dir, 'synthetic_set')
     os.makedirs(synthetic_out_dir, exist_ok=True)
     
-    # 1. Download fonts
     font_paths = download_fonts(fonts_dir)
     if not font_paths:
         print("CRITICAL ERROR: No handwriting fonts could be downloaded.")
         return
         
-    # 2. Load drug names and generate target labels
     medicines = load_words(processed_dir)
     print(f"Loaded {len(medicines)} medicines/brands for synthetic generation.")
     
     labels = generate_prescription_strings(medicines)
     print(f"Generated {len(labels)} synthetic prescription label strings.")
     
-    # 3. Render and save images
     labels_csv_path = os.path.join(processed_dir, "synthetic_labels.csv")
     print("Generating synthetic images and writing labels.csv...")
     
@@ -260,10 +257,8 @@ def main():
             img_filename = f"S_{idx:05d}.jpg"
             img_path = os.path.join(synthetic_out_dir, img_filename)
             
-            # Draw and save
             render_text_image(text, font_paths, img_path)
             
-            # Write row (store relative path for convenience)
             writer.writerow([os.path.join("synthetic_set", img_filename), text])
             
             if (idx + 1) % 1000 == 0:

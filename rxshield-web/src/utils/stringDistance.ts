@@ -105,3 +105,27 @@ export const getFuzzySimilarity = (s1: string, s2: string): number => {
 
   return (levSim + jwSim) / 2.0;
 };
+
+export const areFirstLettersVisuallyEquivalent = (c1: string, c2: string): boolean => {
+  const char1 = c1.toUpperCase();
+  const char2 = c2.toUpperCase();
+  if (char1 === char2) return true;
+  
+  const groups = [
+    ['I', 'L', 'J', 'F', 'T', '1', '7'],
+    ['O', 'D', 'Q', '0', 'C', 'K', 'G'],
+    ['S', '5', '8', 'B', 'E', 'C', 'G'],
+    ['A', '2', 'Z', 'R'],
+    ['M', 'W', '3', 'N', 'H'],
+    ['U', 'V', 'Y', '4'],
+    ['P', 'R', 'B', 'F', 'H', 'D']
+  ];
+  
+  for (const group of groups) {
+    if (group.includes(char1) && group.includes(char2)) {
+      return true;
+    }
+  }
+  return false;
+};
+

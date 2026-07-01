@@ -3,26 +3,7 @@ import csv
 import sqlite3
 import shutil
 
-def levenshtein_distance(s1, s2):
-    """
-    Computes the Levenshtein distance between s1 and s2.
-    """
-    if len(s1) < len(s2):
-        return levenshtein_distance(s2, s1)
-    if len(s2) == 0:
-        return len(s1)
-    
-    previous_row = range(len(s2) + 1)
-    for i, c1 in enumerate(s1):
-        current_row = [i + 1]
-        for j, c2 in enumerate(s2):
-            insertions = previous_row[j + 1] + 1
-            deletions = current_row[j] + 1
-            substitutions = previous_row[j] + (c1 != c2)
-            current_row.append(min(insertions, deletions, substitutions))
-        previous_row = current_row
-        
-    return previous_row[-1]
+from utils import levenshtein_distance
 
 def build_eml_atc_map(eml_path):
     """
@@ -40,13 +21,11 @@ def build_eml_atc_map(eml_path):
             medicine = row.get('Medicine', '').strip().upper()
             atc_code = row.get('ATC Code', '').strip().upper()
             if medicine and atc_code:
-                # Take the first ATC code if comma-separated
                 first_atc = atc_code.split(',')[0].strip()
                 if first_atc:
                     eml_to_atc[medicine] = first_atc
     return eml_to_atc
 
-# Caching for fuzzy matches to prevent redundant expensive computations
 fuzzy_cache = {}
 
 def get_atc_code(drug_name, eml_to_atc):
@@ -82,6 +61,19 @@ def get_atc_code(drug_name, eml_to_atc):
     return resolved_atc
 
 def compile_database():
+    """
+    Compile EML, guidelines, and interactions into a relational SQLite database.
+    
+    Workflow:
+    1. Build ATC mapping from normalized EML.
+    2. Establish connection to SQLite database and enable foreign keys.
+    3. Define database schema (drugs, nstg_protocols, drug_interactions) and composite indices.
+    4. Populate brand-to-generic drug mappings and EML reference drug records.
+    5. Populate clinical guideline protocol records.
+    6. Populate signal-verified drug-drug interaction warning records (using ATC mapping).
+    7. Optimize database via vacuuming, indexing, and analyzer operations.
+    8. Deploy DB asset to web public directory.
+    """
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     processed_dir = os.path.join(base_dir, 'data', 'processed')
     output_dir = os.path.join(base_dir, 'data', 'output')
@@ -95,7 +87,6 @@ def compile_database():
     eml_to_atc = build_eml_atc_map(eml_csv_path)
     print(f"Mapped {len(eml_to_atc)} generic medication names to ATC codes from EML.")
 
-    # Remove existing database file if it exists to start fresh
     if os.path.exists(db_path):
         print(f"Removing existing database file: {db_path}")
         os.remove(db_path)
@@ -103,8 +94,6 @@ def compile_database():
     print(f"\nStep 2: Connecting to SQLite database at: {db_path}")
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-
-    # Enable foreign keys check
     cursor.execute("PRAGMA foreign_keys = ON;")
 
     print("Step 3: Deploying schema tables...")
@@ -148,10 +137,9 @@ def compile_database():
     print("\nStep 5: Populating 'drugs' table...")
     drugs_records = []
     
-    # Track unique brand+generic composite pairs to prevent unique constraint failures
+    # Prevent brand-generic duplicates
     unique_drugs = set()
 
-    # Popular Brand-to-Generic Mappings
     BRAND_MAPPINGS = [
         ("AUGMENTIN", "AMOXICILLIN + CLAVULANIC ACID", "J01CR02"),
         ("PANADOL", "PARACETAMOL", "N02BE01"),
@@ -177,7 +165,6 @@ def compile_database():
             unique_drugs.add(pair)
             drugs_records.append((brand, generic, atc))
 
-    # Read EML normalized file
     with open(eml_csv_path, mode='r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -203,7 +190,6 @@ def compile_database():
         for row in reader:
             generic_name = row.get('generic_name', '').strip().upper()
             
-            # Numeric columns
             single_dose = row.get('max_single_dose_mg')
             single_dose = float(single_dose) if single_dose else None
             
@@ -248,7 +234,6 @@ def compile_database():
             drug_b = row.get('generic_name_b', '').strip().upper()
             severity = row.get('severity', '').strip().upper()
 
-            # Resolve to ATC codes using map
             atc_a = get_atc_code(drug_a, eml_to_atc)
             atc_b = get_atc_code(drug_b, eml_to_atc)
 
@@ -256,7 +241,7 @@ def compile_database():
                 if atc_a == atc_b:
                     skipped_count += 1
                     continue
-                # Order ATC codes alphabetically to ensure uniqueness in composite queries
+                # Ensure unique composite interaction lookup via alphabetical order
                 atc_first = min(atc_a, atc_b)
                 atc_second = max(atc_a, atc_b)
                 
@@ -264,7 +249,6 @@ def compile_database():
                 
                 if interaction_key not in unique_interactions:
                     unique_interactions.add(interaction_key)
-                    # Construct description
                     desc = f"Concurrent use of {drug_a} and {drug_b} is associated with a high frequency of adverse events (severity: {severity})."
                     interactions_records.append((atc_first, atc_second, severity, desc))
             else:
@@ -281,7 +265,6 @@ def compile_database():
     print(f"Populated drug_interactions table with {len(interactions_records)} unique records.")
     print(f"Skipped {skipped_count} interaction rows due to unmapped ATC codes or self-interactions.")
 
-    # Commit all transactions before optimization
     conn.commit()
 
     print("\nStep 8: Finalizing compilation with vacuum and indexing analysis...")
@@ -295,9 +278,7 @@ def compile_database():
     print(f"Successfully generated database binary asset at: {db_path}")
     print(f"Database file size: {db_size / 1024.0 / 1024.0:.3f} MB ({db_size} bytes)")
 
-    # Step 9: Cross-Boundary Asset Mapping
-
-    # Web copies (assets and database directories)
+    # Cross-Boundary Asset Mapping
     web_assets_dir = os.path.abspath(os.path.join(base_dir, '..', 'rxshield-web', 'public', 'assets'))
     os.makedirs(web_assets_dir, exist_ok=True)
     web_db_assets_path = os.path.join(web_assets_dir, 'rxshield_core.db')
