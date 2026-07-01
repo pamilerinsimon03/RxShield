@@ -50,7 +50,7 @@ const DB_PATH = path.resolve(__dirname, '../public/database/rxshield_core.db');
 const PYTHON_PATH = path.resolve(__dirname, '../../rxshield-pipeline/.venv/Scripts/python.exe');
 const BRIDGE_PATH = path.resolve(__dirname, 'query_db_bridge.py');
 
-// Load environment variables from .env.local if present
+
 const envPath = path.resolve(__dirname, '../.env.local');
 if (fs.existsSync(envPath)) {
   const envContent = fs.readFileSync(envPath, 'utf-8');
@@ -244,14 +244,12 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
     return tokens;
   };
 
-  // Try primary model (gemini-2.5-flash) first
   try {
     return await runGeminiRequest('gemini-2.5-flash', 25000);
   } catch (err) {
     console.warn(`[Cloud Track] Primary gemini-2.5-flash failed/timed out: ${err.message || err}.`);
   }
 
-  // Try Groq if key is present
   const groqApiKey = process.env.NEXT_PUBLIC_GROQ_API_KEY;
   if (groqApiKey) {
     try {
@@ -266,7 +264,7 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
 
 
 
-// Helper to query SQLite database via Python bridge
+
 function runDbQuery(sql, params = []) {
   try {
     const args = [BRIDGE_PATH, DB_PATH, sql, ...params.map(String)];
@@ -296,7 +294,6 @@ let DRUG_TO_GENERIC_MAP = new Map();
 let PROTOCOL_GENERICS = new Set();
 let fuse = null;
 
-// In-Memory drug name list loaded from DB
 let ALL_DRUG_NAMES = [];
 function initDrugNames() {
   const candidates = runDbQuery('SELECT DISTINCT brand_name, generic_name FROM drugs');
@@ -342,12 +339,10 @@ const FREQ_NORM_MAPS = {
 
 
 
-// Match single drug name helper
 function matchDrugNameOnly(text) {
   const cleaned = normalizeText(text);
   if (!cleaned || cleaned.length < 3) return { matched: false, confidence: 0 };
   
-  // Exact match check
   const exactRows = runDbQuery(
     'SELECT brand_name, generic_name FROM drugs WHERE brand_name = ? OR generic_name = ? LIMIT 1',
     [cleaned, cleaned]
@@ -356,7 +351,6 @@ function matchDrugNameOnly(text) {
     return { matched: true, confidence: 1.0, name: exactRows[0].generic_name, brand: exactRows[0].brand_name };
   }
 
-  // Fuzzy match candidates using getFuzzySimilarity
   let candidates = [];
   for (const candidate of ALL_DRUG_NAMES) {
     const score = getFuzzySimilarity(cleaned, candidate);
@@ -383,7 +377,6 @@ function matchDrugNameOnly(text) {
     }
   }
 
-  // Fallback loop if no candidate matched
   if (candidates.length === 0) {
     for (const candidate of ALL_DRUG_NAMES) {
       const score = getFuzzySimilarity(cleaned, candidate);
@@ -429,11 +422,9 @@ async function matchDrug(text) {
     return { matched: false, confidence: 0.0, error: 'Empty input text' };
   }
 
-  // Find the first token that matches any drug in the DB
   for (const token of tokens) {
     const res = matchDrugNameOnly(token);
     if (res.matched) {
-      // Relational Join
       const joinSql = `
         SELECT 
             d.brand_name,
@@ -499,7 +490,6 @@ async function matchDrug(text) {
 
 
 
-// Precise word segmentation
 function segmentLineIntoWords(width, height, rgbaBuffer, globalBbox, noiseThreshold = 1) {
   const { x: gx, y: gy, w: gw, h: gh } = globalBbox;
   
@@ -611,7 +601,6 @@ function segmentLineIntoWords(width, height, rgbaBuffer, globalBbox, noiseThresh
   return wordBoxes.length > 0 ? wordBoxes : [globalBbox];
 }
 
-// Letterboxing preprocess
 function preprocessLetterbox(width, height, rgbaBuffer, destW = 512, destH = 128) {
   const output = new Float32Array(destW * destH);
   output.fill(1.0);
@@ -647,7 +636,6 @@ function preprocessLetterbox(width, height, rgbaBuffer, destW = 512, destH = 128
   return output;
 }
 
-// Stretched preprocess
 function preprocessStretched(width, height, rgbaBuffer, destW = 512, destH = 128) {
   const output = new Float32Array(destW * destH);
   for (let y = 0; y < destH; y++) {
@@ -667,7 +655,6 @@ function preprocessStretched(width, height, rgbaBuffer, destW = 512, destH = 128
 
 
 
-// Visual Mapping Candidates
 const VISUAL_MAPS = {
   '0': ['0'], '1': ['1'], '2': ['2'], '3': ['3'], '4': ['4'],
   '5': ['5'], '6': ['6'], '7': ['7'], '8': ['8', '5'], '9': ['9', '0'],
@@ -838,7 +825,6 @@ function translateToNumericDose(word, drugGenericName = null) {
     let score = cost;
     if (hasSnapped) score -= 10;
 
-    // Check drug specific limits to expand single digits
     if (drugGenericName) {
       const genLower = drugGenericName.toLowerCase();
       if (genLower.includes('amoxicillin') && (snapped === 5 || snapped === 50 || snapped === 60)) {
@@ -879,7 +865,6 @@ function translateToNumericDose(word, drugGenericName = null) {
   return { value: bestVal, snapped: bestSnapped, suffix, score: bestCost };
 }
 
-// Frequency and Abbreviation Normalization maps
 function normalizeFrequency(token) {
   const tk = token.toLowerCase();
   for (const [standard, aliases] of Object.entries(FREQ_NORM_MAPS)) {
@@ -950,7 +935,6 @@ function getBestFuzzyScore(word) {
   return bestScore;
 }
 
-// Select best candidate between Letterboxed and Stretched OCR
 async function selectBestOcrCandidate(wordL, wordS, previousMatchedDrug = null) {
   const wl = cleanOcrToken(wordL);
   const ws = cleanOcrToken(wordS);
@@ -1027,7 +1011,7 @@ function postProcessOcrText(text, matchedDrugGeneric = null) {
       const isDrug = matchDrugNameOnly(token).matched;
       if (isDosePrefix && !isDrug) {
         joinedTokens.push(token + nextToken);
-        i++; // skip nextToken
+        i++;
         continue;
       }
     }
@@ -1039,7 +1023,6 @@ function postProcessOcrText(text, matchedDrugGeneric = null) {
   for (let token of joinedTokens) {
     const tokenLower = token.toLowerCase();
 
-    // Check garbage token (single letters that are not dosage suffixes)
     if (token.length === 1 && !['g', '3', 'a', 'y', 'q', 'm', 'n', 'r'].includes(tokenLower)) {
       continue;
     }
@@ -1047,7 +1030,6 @@ function postProcessOcrText(text, matchedDrugGeneric = null) {
       continue;
     }
 
-    // Normalize frequency tokens
     const normFreq = normalizeFrequency(token);
     if (normFreq !== token) {
       processed.push(normFreq);
@@ -1059,7 +1041,6 @@ function postProcessOcrText(text, matchedDrugGeneric = null) {
       continue;
     }
 
-    // Attempt dosage translation
     if (hasDosagePattern(token)) {
       const { value, snapped, suffix } = translateToNumericDose(token, matchedDrugGeneric);
       if (snapped && value !== null) {
@@ -1168,13 +1149,11 @@ async function evaluateSafetyVerdict(text, matchedDrugResult) {
   return { verdict, message, citation };
 }
 
-// Main Runner
 async function main() {
   console.log(`[Batch Test] Loading ONNX runtime session...`);
   const session = await ort.InferenceSession.create(MODEL_PATH);
   console.log(`[Batch Test] Model loaded successfully.`);
 
-  // Initialize drug name cache from DB
   initDrugNames();
   console.log(`[Batch Test] Loaded ${ALL_DRUG_NAMES.length} drug candidates from database.`);
 
@@ -1203,7 +1182,6 @@ async function main() {
       const wordBoxes = segmentLineIntoWords(width, height, binarizedBuffer, globalBbox, 1);
       console.log(`[Segmentation] Split line into ${wordBoxes.length} word box(es)`);
 
-      // Check network connectivity
       const isOnline = false;
       console.log(`[Orchestrator] Network Status: ${isOnline ? 'ONLINE' : 'OFFLINE'}`);
 
@@ -1213,7 +1191,6 @@ async function main() {
 
       if (isOnline) {
         console.log(`[Orchestrator] Online Mode. Initiating parallel race...`);
-        // Start local OCR runner (representing local track)
         const localTrackPromise = (async () => {
           let preMatchedGeneric = null;
           let highestConfidence = 0;
@@ -1343,12 +1320,10 @@ async function main() {
       console.log(`[Source]:       "${source.toUpperCase()}"`);
       const matchResult = await matchDrug(postProcessed);
       
-      // Auto-correct drug name token if drug matched
       let verifiedText = postProcessed;
       if (matchResult.matched && matchResult.matchedString) {
         const tokens = postProcessed.split(/\s+/).filter(Boolean);
         if (tokens.length > 0) {
-          // Replace first matched drug token with its database brand name
           for (let i = 0; i < tokens.length; i++) {
             const res = matchDrugNameOnly(tokens[i]);
             if (res.matched) {
@@ -1406,7 +1381,6 @@ async function main() {
     }
   }
 
-  // Compile final report
   const successRate = (passedCount / files.length) * 100;
   console.log(`\n==================================================`);
   console.log(`[Batch Test Complete]`);
@@ -1415,7 +1389,6 @@ async function main() {
   console.log(`Failed:              ${files.length - passedCount}`);
   console.log(`Success Rate:        ${successRate.toFixed(2)}%`);
 
-  // Write Markdown Report to baseline_results.md
   let report = `# OCR Batch Evaluation Report\n\n`;
   report += `**Timestamp:** ${new Date().toISOString()}\n`;
   report += `**Overall Accuracy:** ${passedCount}/${files.length} (${successRate.toFixed(2)}%)\n\n`;
