@@ -112,10 +112,10 @@ export const areFirstLettersVisuallyEquivalent = (c1: string, c2: string): boole
   if (char1 === char2) return true;
   
   const groups = [
-    ['I', 'L', 'J', 'F', 'T', '1', '7'],
+    ['I', 'L', 'J', 'F', 'T', '1', '7', 'K'],
     ['O', 'D', 'Q', '0', 'C', 'K', 'G'],
     ['S', '5', '8', 'B', 'E', 'C', 'G'],
-    ['A', '2', 'Z', 'R'],
+    ['A', '2', 'Z', 'R', 'H'],
     ['M', 'W', '3', 'N', 'H'],
     ['U', 'V', 'Y', '4'],
     ['P', 'R', 'B', 'F', 'H', 'D']
