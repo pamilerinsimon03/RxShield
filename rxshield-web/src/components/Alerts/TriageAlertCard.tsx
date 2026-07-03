@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useWorkflowState } from '@/context/WorkflowStateContext';
 import { DemographicChecklist } from '@/components/Alerts/DemographicChecklist';
 import { 
@@ -12,8 +12,11 @@ import {
   ChevronUp,
   ShieldCheck,
   ShieldX,
-  Database
+  Database,
+  Brain,
+  RefreshCw
 } from 'lucide-react';
+import { runAiRiskAnalysis } from '@/services/aiRiskService';
 
 /**
  * TriageAlertCard component displays the results and clinical validation feedback
@@ -24,6 +27,59 @@ export const TriageAlertCard: React.FC = () => {
   const { phase, finalVerdict, errorMsg, validationData, extractedTokens } = state;
   const [showSafetyReport, setShowSafetyReport] = useState<boolean>(false);
   const [confirmSuccess, setConfirmSuccess] = useState<boolean>(false);
+
+  // Transient states for AI Risk Analysis
+  const [aiReport, setAiReport] = useState<any | null>(null);
+  const [aiLoading, setAiLoading] = useState<boolean>(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [showAiReport, setShowAiReport] = useState<boolean>(true);
+  const [checkedItems, setCheckedItems] = useState<{ id: string; checked: boolean }[]>([]);
+
+  useEffect(() => {
+    if (!finalVerdict) {
+      setAiReport(null);
+      setAiLoading(false);
+      setAiError(null);
+      setCheckedItems([]);
+    }
+  }, [finalVerdict]);
+
+  const handleRunAiAnalysis = async () => {
+    if (!validationData) return;
+    setAiLoading(true);
+    setAiError(null);
+
+    // Format checklist status description
+    let checklistStatus = 'No demographic checklist required';
+    if (validationData.requiresPregnancyCheck === 1 || validationData.requiresRenalCheck === 1) {
+      if (checkedItems.length > 0) {
+        checklistStatus = checkedItems
+          .map((item) => `${item.id === 'pregnancy' ? 'Pregnancy check' : 'Renal clearance check'}: ${item.checked ? 'VERIFIED' : 'UNCHECKED'}`)
+          .join(', ');
+      } else {
+        const requiredList = [];
+        if (validationData.requiresPregnancyCheck === 1) requiredList.push('Pregnancy check: UNCHECKED');
+        if (validationData.requiresRenalCheck === 1) requiredList.push('Renal clearance check: UNCHECKED');
+        checklistStatus = requiredList.join(', ');
+      }
+    }
+
+    try {
+      const report = await runAiRiskAnalysis({
+        genericName: validationData.genericName || 'Unknown',
+        dailyDose: validationData.dailyDoseMg ? `${validationData.dailyDoseMg} mg` : 'N/A',
+        verdict: finalVerdict?.verdict || 'UNKNOWN',
+        checklistStatus,
+        capturedImageUri: state.capturedImageUri,
+      });
+      setAiReport(report);
+    } catch (err) {
+      console.error('AI Risk Analysis execution failed:', err);
+      setAiError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAiLoading(false);
+    }
+  };
 
   /**
    * Scans extraction logs to verify if visual typo correction was applied
@@ -260,8 +316,139 @@ export const TriageAlertCard: React.FC = () => {
             </div>
 
             {finalVerdict.verdict === 'WARNING' && (
-              <DemographicChecklist validationData={validationData} />
+              <DemographicChecklist 
+                validationData={validationData} 
+                onChecklistChange={setCheckedItems}
+              />
             )}
+
+            {/* AI Risk Analysis Module */}
+            <div className="mt-3 border border-slate-200 rounded-xl bg-white p-4 shadow-sm w-full space-y-3">
+              {/* Header */}
+              <div className="flex items-center gap-1.5 pb-2.5 border-b border-slate-100">
+                <Brain className="w-4.5 h-4.5 text-blue-600 shrink-0" />
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-700">
+                  Cloud Safety Triage
+                </span>
+              </div>
+
+              {!aiReport && !aiLoading && !aiError && (
+                <button
+                  onClick={handleRunAiAnalysis}
+                  className="w-full py-2.5 border border-slate-200 hover:border-blue-400 hover:bg-blue-50/30 text-slate-700 hover:text-blue-700 text-xs font-bold uppercase tracking-wider rounded-xl transition-all flex items-center justify-center gap-1.5 focus:outline-none cursor-pointer"
+                >
+                  <Brain className="w-4 h-4 text-blue-600" />
+                  Run AI Risk Analysis
+                </button>
+              )}
+
+              {aiLoading && (
+                <div className="w-full relative overflow-hidden bg-blue-600 text-white text-xs font-bold uppercase tracking-wider rounded-xl py-3 flex items-center justify-center gap-2 shadow-sm select-none">
+                  <Loader2 className="w-4 h-4 animate-spin text-blue-100" />
+                  <span>Analyzing prescription with Cloud AI...</span>
+                  {/* Light blue track animation */}
+                  <div className="absolute bottom-0 left-0 right-0 h-1 bg-blue-100/20">
+                    <div className="h-full bg-blue-100 animate-pulse w-full" />
+                  </div>
+                </div>
+              )}
+
+              {aiError && (
+                <div className="space-y-2.5">
+                  <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl flex gap-2.5 items-start text-xs leading-relaxed">
+                    <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold block uppercase tracking-wide text-[10px]">Analysis Execution Failed</span>
+                      {aiError}
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleRunAiAnalysis}
+                    className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 active:bg-slate-100 text-slate-700 text-xs font-bold uppercase tracking-wider rounded-xl transition-all flex items-center justify-center gap-1.5 focus:outline-none cursor-pointer border border-slate-300/50"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    Retry Analysis
+                  </button>
+                </div>
+              )}
+
+              {aiReport && (
+                <div className="border border-slate-100 rounded-xl bg-slate-50/50 overflow-hidden">
+                  <button
+                    onClick={() => setShowAiReport(!showAiReport)}
+                    className="w-full px-4 py-2.5 text-xs font-bold text-slate-700 hover:text-slate-900 bg-slate-100/60 hover:bg-slate-100 flex items-center justify-between focus:outline-none transition-colors border-b border-slate-200/50"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <Brain className="w-4 h-4 text-blue-600 shrink-0" />
+                      <span>AI Clinical Safety Analysis</span>
+                    </div>
+                    {showAiReport ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                  </button>
+                  
+                  {showAiReport && (
+                    <div className="p-4 space-y-4 text-left">
+                      {/* Safety Warnings */}
+                      <div>
+                        <span className="text-[10px] font-black text-red-700 uppercase tracking-wider block mb-1.5">
+                          Safety Warnings
+                        </span>
+                        {aiReport.safetyWarnings && aiReport.safetyWarnings.length > 0 ? (
+                          <ul className="space-y-1.5">
+                            {aiReport.safetyWarnings.map((warning: string, i: number) => (
+                              <li key={i} className="text-xs font-medium text-red-800 bg-red-50/60 border border-red-100 px-3 py-2 rounded-lg flex items-start gap-2">
+                                <span className="text-red-500 font-bold shrink-0 mt-0.5">•</span>
+                                <span className="leading-relaxed">{warning}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className="text-xs text-slate-500 italic px-1">No major contraindications identified.</div>
+                        )}
+                      </div>
+
+                      {/* Food & Drug Interactions */}
+                      <div>
+                        <span className="text-[10px] font-black text-amber-700 uppercase tracking-wider block mb-1.5">
+                          Food & Drug Interactions
+                        </span>
+                        {aiReport.foodDrugInteractions && aiReport.foodDrugInteractions.length > 0 ? (
+                          <ul className="space-y-1.5">
+                            {aiReport.foodDrugInteractions.map((interaction: string, i: number) => (
+                              <li key={i} className="text-xs font-medium text-amber-800 bg-amber-50/50 border border-amber-200/30 px-3 py-2 rounded-lg flex items-start gap-2">
+                                <span className="text-amber-500 font-bold shrink-0 mt-0.5">•</span>
+                                <span className="leading-relaxed">{interaction}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className="text-xs text-slate-500 italic px-1">No typical food-drug interactions highlighted.</div>
+                        )}
+                      </div>
+
+                      {/* Demographic Risk Assessment */}
+                      <div>
+                        <span className="text-[10px] font-black text-slate-600 uppercase tracking-wider block mb-1.5">
+                          Demographic Risk Assessment
+                        </span>
+                        <div className="p-3.5 bg-white border border-slate-200 rounded-xl shadow-sm text-xs leading-relaxed font-medium text-slate-700">
+                          <p>{aiReport.demographicRiskAssessment}</p>
+                        </div>
+                      </div>
+
+                      {/* Clinical Recommendation */}
+                      <div>
+                        <span className="text-[10px] font-black text-blue-700 uppercase tracking-wider block mb-1.5">
+                          Clinical Recommendation
+                        </span>
+                        <div className="p-3.5 bg-blue-50 border-l-4 border-blue-600 rounded-r-xl rounded-l-md text-xs leading-relaxed font-bold text-blue-900">
+                          <p>{aiReport.clinicalRecommendation}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
 
             <div className="flex flex-col sm:flex-row items-center gap-2 mt-2 w-full">
               {finalVerdict.verdict !== 'DANGER' ? (

@@ -4,13 +4,17 @@ import { useDatabase } from '@/context/DatabaseContext';
 
 interface DemographicChecklistProps {
   validationData: any;
+  onChecklistChange?: (checkedItems: { id: string; checked: boolean }[]) => void;
 }
 
 /**
  * DemographicChecklist component handles clinician override validation gates,
  * checking for pregnancy and renal clearance requirements and verifying active overrides.
  */
-export const DemographicChecklist: React.FC<DemographicChecklistProps> = ({ validationData }) => {
+export const DemographicChecklist: React.FC<DemographicChecklistProps> = ({ 
+  validationData,
+  onChecklistChange
+}) => {
   const { query, logOverride } = useDatabase();
   const [items, setItems] = useState<Array<{ id: string; label: string; checked: boolean }>>([]);
   const [isAuthorized, setIsAuthorized] = useState<boolean>(false);
@@ -78,6 +82,17 @@ export const DemographicChecklist: React.FC<DemographicChecklistProps> = ({ vali
       console.error('Failed to write override audit log:', err);
     }
   };
+
+  useEffect(() => {
+    if (onChecklistChange) {
+      onChecklistChange(
+        items.map((item) => ({
+          id: item.id,
+          checked: isAuthorized ? true : item.checked,
+        }))
+      );
+    }
+  }, [items, isAuthorized, onChecklistChange]);
 
   if (items.length === 0) return null;
 
