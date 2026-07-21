@@ -68,6 +68,12 @@ const matchDrugNameOnly = (text: string): { matched: boolean; confidence: number
   
   let candidates: { name: string; score: number; hasProtocol: boolean }[] = [];
   for (const candidate of ALL_DRUG_NAMES) {
+    if (!candidate || candidate.length === 0) continue;
+    const visuallyEquivalentFirstLetter = areFirstLettersVisuallyEquivalent(cleaned[0], candidate[0]);
+    if (!visuallyEquivalentFirstLetter) {
+      continue;
+    }
+
     const score = getFuzzySimilarity(cleaned, candidate);
     const hasProtocol = hasProtocolInDb(candidate);
     
@@ -86,8 +92,7 @@ const matchDrugNameOnly = (text: string): { matched: boolean; confidence: number
       threshold = 0.78;
     }
     
-    const visuallyEquivalentFirstLetter = areFirstLettersVisuallyEquivalent(cleaned[0], candidate[0]);
-    if (score >= threshold && visuallyEquivalentFirstLetter) {
+    if (score >= threshold) {
       candidates.push({ name: candidate, score, hasProtocol });
     }
   }
@@ -95,10 +100,16 @@ const matchDrugNameOnly = (text: string): { matched: boolean; confidence: number
   // Fallback loop
   if (candidates.length === 0) {
     for (const candidate of ALL_DRUG_NAMES) {
+      if (!candidate || candidate.length === 0) continue;
+      const visuallyEquivalentFirstLetter = areFirstLettersVisuallyEquivalent(cleaned[0], candidate[0]);
+      if (!visuallyEquivalentFirstLetter) {
+        continue;
+      }
+
       const score = getFuzzySimilarity(cleaned, candidate);
       const hasProtocol = hasProtocolInDb(candidate);
       
-      if (score >= 0.45 && hasProtocol && areFirstLettersVisuallyEquivalent(cleaned[0], candidate[0])) {
+      if (score >= 0.45 && hasProtocol) {
         candidates.push({ name: candidate, score, hasProtocol });
       }
     }

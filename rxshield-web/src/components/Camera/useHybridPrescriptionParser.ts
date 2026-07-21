@@ -398,7 +398,7 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
             const cloudResultText = await Promise.race([
               runCloudTrack(),
               new Promise<string>((_, reject) =>
-                setTimeout(() => reject(new Error('Cloud API request timed out (4000ms limit reached).')), 4000)
+                setTimeout(() => reject(new Error('Cloud API request timed out (12000ms limit reached).')), 12000)
               ),
             ]);
 
