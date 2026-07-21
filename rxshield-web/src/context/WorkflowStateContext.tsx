@@ -47,6 +47,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
   const { matchDrug, isDbReady, query } = useDatabase();
   const workerClientRef = useRef<RxShieldWorkerClient | null>(null);
   const ocrServiceRef = useRef<OcrService | null>(null);
+  const activeSourceRef = useRef<'local' | 'cloud' | null>(null);
 
   const { parsePrescription } = useHybridPrescriptionParser({
     ocrServiceRef,
@@ -208,6 +209,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
     setErrorMsg(null);
     setIsProcessing(false);
     setCapturedImageUri(null);
+    activeSourceRef.current = null;
 
     if (workerClientRef.current) {
       workerClientRef.current.send({
@@ -258,6 +260,13 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
      * against candidate database matches, checks dosing ranges and drug-drug interactions.
      */
     const evaluateExtractionResult = async (text: string, source: 'local' | 'cloud') => {
+      // Prevent local OCR results from overwriting a completed cloud VLM result
+      if (source === 'local' && activeSourceRef.current === 'cloud') {
+        console.log('[WorkflowStateContext] Guarded against race: Local OCR attempt discarded because Cloud VLM results have already resolved.');
+        return;
+      }
+      activeSourceRef.current = source;
+
       setLogs((prev) => [
         ...prev,
         `[App] Character extraction complete (Source: ${source.toUpperCase()}): "${text.replace(/\n/g, ' | ')}"`

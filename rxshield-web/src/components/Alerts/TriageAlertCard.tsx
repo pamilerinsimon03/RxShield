@@ -88,7 +88,8 @@ export const TriageAlertCard: React.FC = () => {
   const isAutoCorrected = () => {
     if (!validationData || !validationData.genericName) return false;
     
-    const extractionLog = state.logs.find(l => l.includes('Character extraction complete'));
+    const reversedLogs = [...state.logs].reverse();
+    const extractionLog = reversedLogs.find(l => l.includes('Character extraction complete'));
     if (extractionLog) {
       const match = extractionLog.match(/: "([^"]+)"/);
       if (match && match[1]) {
@@ -105,7 +106,8 @@ export const TriageAlertCard: React.FC = () => {
    * Retrieves the raw OCR output string from worker logs.
    */
   const getRawOcrString = () => {
-    const extractionLog = state.logs.find(l => l.includes('Character extraction complete'));
+    const reversedLogs = [...state.logs].reverse();
+    const extractionLog = reversedLogs.find(l => l.includes('Character extraction complete'));
     if (extractionLog) {
       const match = extractionLog.match(/: "([^"]+)"/);
       if (match && match[1]) {

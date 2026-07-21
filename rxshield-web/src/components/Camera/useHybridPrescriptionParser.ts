@@ -169,7 +169,9 @@ export const useHybridPrescriptionParser = ({ ocrServiceRef, appendLog, matchDru
 
       const runCloudTrack = async (): Promise<string> => {
         const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+        console.log('[Cloud Track] NEXT_PUBLIC_GEMINI_API_KEY presence:', !!apiKey);
         if (!apiKey) {
+          console.error('[Cloud Track] NEXT_PUBLIC_GEMINI_API_KEY is not configured in the environment.');
           throw new Error('NEXT_PUBLIC_GEMINI_API_KEY is not configured.');
         }
 
@@ -293,6 +295,7 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
         };
 
         const runGeminiRequest = async (model: string, timeoutMs: number): Promise<string> => {
+          console.log(`[Cloud Track] Dispatching fetch to Gemini (${model})...`);
           appendLog(`[Cloud Track] Dispatching fetch to Gemini (${model})...`);
           const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
           
@@ -305,10 +308,12 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
           }, timeoutMs);
 
           if (!response.ok) {
+            console.error(`[Cloud Track] Gemini API response failure (${model}): ${response.status} ${response.statusText}`);
             throw new Error(`Gemini API response failure (${model}): ${response.status} ${response.statusText}`);
           }
 
           const data = await response.json();
+          console.log(`[Cloud Track] Gemini (${model}) raw response:`, data);
           const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text;
           if (!jsonText) {
             throw new Error(`Empty payload returned from Gemini (${model}).`);
@@ -320,6 +325,7 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
         };
 
         const runGroqRequest = async (groqKey: string, timeoutMs: number): Promise<string> => {
+          console.log('[Cloud Track] Dispatching fetch to Groq (qwen/qwen3.6-27b)...');
           appendLog('[Cloud Track] Dispatching fetch to Groq (qwen/qwen3.6-27b)...');
           const url = 'https://api.groq.com/openai/v1/chat/completions';
           
@@ -357,10 +363,12 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
           }, timeoutMs);
 
           if (!response.ok) {
+            console.error(`[Cloud Track] Groq API response failure: ${response.status} ${response.statusText}`);
             throw new Error(`Groq API response failure: ${response.status} ${response.statusText}`);
           }
 
           const data = await response.json();
+          console.log('[Cloud Track] Groq raw response:', data);
           const jsonText = data.choices?.[0]?.message?.content;
           if (!jsonText) {
             throw new Error('Empty payload returned from Groq.');
@@ -374,14 +382,17 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
         try {
           return await runGeminiRequest('gemini-2.5-flash', 15000);
         } catch (err) {
+          console.warn('[Cloud Track] Primary gemini-2.5-flash failed/timed out:', err);
           appendLog(`[Cloud Track] Primary gemini-2.5-flash failed/timed out: ${err instanceof Error ? err.message : String(err)}.`);
         }
 
         const groqApiKey = process.env.NEXT_PUBLIC_GROQ_API_KEY;
+        console.log('[Cloud Track] NEXT_PUBLIC_GROQ_API_KEY presence:', !!groqApiKey);
         if (groqApiKey) {
           try {
             return await runGroqRequest(groqApiKey, 12000);
           } catch (err) {
+            console.error('[Cloud Track] Groq failed/timed out:', err);
             appendLog(`[Cloud Track] Groq failed/timed out: ${err instanceof Error ? err.message : String(err)}.`);
           }
         }
@@ -395,6 +406,7 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
         // Run cloud refinement asynchronously to keep the UI responsive
         (async () => {
           try {
+            console.log('[Orchestrator] Starting cloud VLM refinement track...');
             const cloudResultText = await Promise.race([
               runCloudTrack(),
               new Promise<string>((_, reject) =>
@@ -403,12 +415,15 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
             ]);
 
             if (cloudResultText) {
+              console.log('[Orchestrator] Cloud background refinement received:', cloudResultText);
               appendLog('[Orchestrator] Cloud background refinement received. Merging tracks...');
               const mergedText = await resolveHybridLines(localText, cloudResultText);
+              console.log('[Orchestrator] Merged refined result:', mergedText);
               appendLog(`[Orchestrator] Resolved hybrid refined text: "${mergedText.replace(/\n/g, ' | ')}"`);
               onRefined({ text: mergedText, source: 'cloud' });
             }
           } catch (err) {
+            console.error('[Orchestrator] Cloud background refinement failed or timed out:', err);
             appendLog(`[Orchestrator] Cloud background refinement failed or timed out: ${err instanceof Error ? err.message : String(err)}`);
           }
         })();
