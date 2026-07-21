@@ -5,41 +5,13 @@ interface ParserOptions {
   ocrServiceRef: React.MutableRefObject<OcrService | null>;
   appendLog: (log: string) => void;
   matchDrug?: (text: string) => Promise<any>;
+  isOnline: boolean;
 }
 
 export interface HybridParseResult {
   text: string;
   source: 'cloud' | 'local';
 }
-
-const checkOnlineStatus = async (appendLog: (log: string) => void): Promise<boolean> => {
-  if (typeof navigator === 'undefined') {
-    return false;
-  }
-  if (!navigator.onLine) {
-    appendLog('[Orchestrator] navigator.onLine is false.');
-    return false;
-  }
-  try {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), 2000);
-    // Use GET and no-cors mode to perform a lightweight connectivity ping to a standard endpoint
-    await fetch('https://www.google.com/generate_204', {
-      method: 'GET',
-      mode: 'no-cors',
-      signal: controller.signal,
-      cache: 'no-store'
-    });
-    clearTimeout(id);
-    return true;
-  } catch (e) {
-    appendLog(`[Orchestrator] Reachability ping failed: ${e instanceof Error ? e.message : String(e)}. Falling back to navigator.onLine status.`);
-    // Critical fix: If the ping itself fails (e.g. blocked by DNS/adblocker/fetch policy),
-    // but navigator.onLine is true, we should STILL assume we are online and attempt the cloud track
-    // rather than forcing a local fallback.
-    return true;
-  }
-};
 
 const convertRgbaToBase64 = (
   rgbaBuffer: Uint8ClampedArray,
@@ -192,7 +164,7 @@ const resolveHybridLines = async (
  * Hook to manage the hybrid parsing workflow, coordinating online/offline states,
  * and performing a race between local ONNX OCR and cloud VLM endpoints.
  */
-export const useHybridPrescriptionParser = ({ ocrServiceRef, appendLog, matchDrug }: ParserOptions) => {
+export const useHybridPrescriptionParser = ({ ocrServiceRef, appendLog, matchDrug, isOnline }: ParserOptions) => {
   const parsePrescription = useCallback(
     async (
       rgbaBuffer: Uint8ClampedArray,
@@ -201,8 +173,6 @@ export const useHybridPrescriptionParser = ({ ocrServiceRef, appendLog, matchDru
       scanMode: 'line' | 'block' = 'line',
       onRefined?: (result: HybridParseResult) => void
     ): Promise<HybridParseResult> => {
-      appendLog('[Orchestrator] Probing connection speed and reachability...');
-      const isOnline = await checkOnlineStatus(appendLog);
       appendLog(`[Orchestrator] Network Status: ${isOnline ? 'ONLINE' : 'OFFLINE'}`);
 
       const runLocalTrack = async (): Promise<string> => {
@@ -477,7 +447,7 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
       appendLog('[Orchestrator] Returning local OCR result instantly to user.');
       return { text: localText, source: 'local' };
     },
-    [ocrServiceRef, appendLog, matchDrug]
+    [ocrServiceRef, appendLog, matchDrug, isOnline]
   );
 
   return { parsePrescription };
