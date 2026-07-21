@@ -402,37 +402,46 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
         throw new Error('All cloud models and API fallbacks failed.');
       };
 
-      const localText = await localPromise;
+      if (isOnline) {
+        try {
+          console.log('[Orchestrator] Starting cloud VLM track...');
+          const cloudResultText = await Promise.race([
+            runCloudTrack(),
+            new Promise<string>((_, reject) =>
+              setTimeout(() => reject(new Error('Cloud API request timed out (12000ms limit reached).')), 12000)
+            ),
+          ]);
 
-      if (isOnline && onRefined) {
-        // Run cloud refinement asynchronously to keep the UI responsive
-        (async () => {
-          try {
-            console.log('[Orchestrator] Starting cloud VLM background track...');
-            const cloudResultText = await Promise.race([
-              runCloudTrack(),
-              new Promise<string>((_, reject) =>
-                setTimeout(() => reject(new Error('Cloud API request timed out (12000ms limit reached).')), 12000)
-              ),
-            ]);
-
-            if (cloudResultText) {
-              console.log('[Orchestrator] Cloud background refinement received:', cloudResultText);
-              appendLog('[Orchestrator] Cloud background refinement received. Merging tracks...');
-              const mergedText = await resolveHybridLines(localText, cloudResultText);
-              console.log('[Orchestrator] Merged hybrid text:', mergedText);
-              appendLog(`[Orchestrator] Resolved hybrid refined text: "${mergedText.replace(/\n/g, ' | ')}"`);
-              onRefined({ text: mergedText, source: 'cloud' });
-            }
-          } catch (err) {
-            console.error('[Orchestrator] Cloud background refinement failed or timed out:', err);
-            appendLog(`[Orchestrator] Cloud background refinement failed or timed out: ${err instanceof Error ? err.message : String(err)}`);
+          const localText = await localPromise;
+          if (cloudResultText) {
+            console.log('[Orchestrator] Cloud background refinement received:', cloudResultText);
+            appendLog('[Orchestrator] Cloud background refinement received. Merging tracks...');
+            const mergedText = await resolveHybridLines(localText, cloudResultText);
+            console.log('[Orchestrator] Merged hybrid text:', mergedText);
+            appendLog(`[Orchestrator] Resolved hybrid refined text: "${mergedText.replace(/\n/g, ' | ')}"`);
+            const cloudRes = { text: mergedText, source: 'cloud' as const };
+            if (onRefined) onRefined(cloudRes);
+            return cloudRes;
           }
-        })();
+        } catch (err) {
+          console.error('[Orchestrator] Cloud background refinement failed or timed out:', err);
+          appendLog(`[Orchestrator] Cloud background refinement failed or timed out: ${err instanceof Error ? err.message : String(err)}`);
+        }
+
+        // Fallback to local OCR if VLM failed or timed out
+        appendLog('[Orchestrator] Falling back to local OCR result.');
+        const localText = await localPromise;
+        const fallbackRes = { text: localText, source: 'local' as const };
+        if (onRefined) onRefined(fallbackRes);
+        return fallbackRes;
       }
 
+      // Offline mode: just await and return local OCR
+      const localText = await localPromise;
       appendLog('[Orchestrator] Returning local OCR result instantly to user.');
-      return { text: localText, source: 'local' };
+      const localRes = { text: localText, source: 'local' as const };
+      if (onRefined) onRefined(localRes);
+      return localRes;
     },
     [ocrServiceRef, appendLog, matchDrug]
   );

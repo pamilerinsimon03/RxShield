@@ -28,9 +28,13 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       console.log('[Service Worker] Pre-caching critical assets...');
-      return cache.addAll(PRECACHE_ASSETS).catch((err) => {
-        console.error('[Service Worker] Error during addAll: ', err);
-      });
+      return Promise.allSettled(
+        PRECACHE_ASSETS.map((asset) =>
+          cache.add(asset).catch((err) => {
+            console.warn(`[Service Worker] Failed to cache asset "${asset}":`, err);
+          })
+        )
+      );
     })
   );
 });
