@@ -145,7 +145,7 @@ export const useHybridPrescriptionParser = ({ ocrServiceRef, appendLog, matchDru
     ): Promise<HybridParseResult> => {
       appendLog(`[Orchestrator] Network Status (Background Check): ${isOnline ? 'ONLINE' : 'OFFLINE'}`);
 
-      const runLocalTrack = async (): Promise<string> => {
+      const runLocalTrack = async (buffer: Uint8ClampedArray): Promise<string> => {
         const ocrService = ocrServiceRef.current;
         if (!ocrService) {
           throw new Error('Local OCR service is not available.');
@@ -153,19 +153,20 @@ export const useHybridPrescriptionParser = ({ ocrServiceRef, appendLog, matchDru
         appendLog('[Local Track] Initializing ONNX WASM model...');
         await ocrService.init();
         appendLog('[Local Track] Running OCR neural network pass...');
-        const localRes = await ocrService.runOcr(rgbaBuffer, width, height);
+        const localRes = await ocrService.runOcr(buffer, width, height);
         appendLog(`[Local Track] OCR finished: "${localRes.text}"`);
         return localRes.text || '';
       };
 
       if (!isOnline) {
         appendLog('[Orchestrator] Offline Mode active. Executing local track only.');
-        const localText = await runLocalTrack();
+        const localText = await runLocalTrack(rgbaBuffer);
         return { text: localText, source: 'local' };
       }
 
       appendLog('[Orchestrator] Online Mode. Initiating parallel race...');
-      const localPromise = runLocalTrack();
+      const localBuffer = new Uint8ClampedArray(rgbaBuffer);
+      const localPromise = runLocalTrack(localBuffer);
 
       const runCloudTrack = async (): Promise<string> => {
         const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
