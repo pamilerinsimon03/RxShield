@@ -81,8 +81,7 @@ const parseLineComponents = (line: string): { medication: string; dosage: string
  */
 const resolveLineDisagreement = async (
   localLine: string,
-  cloudLine: string,
-  matchDrug?: (text: string) => Promise<any>
+  cloudLine: string
 ): Promise<string> => {
   if (localLine.trim().toLowerCase() === cloudLine.trim().toLowerCase()) {
     return localLine;
@@ -91,49 +90,18 @@ const resolveLineDisagreement = async (
   const localParts = parseLineComponents(localLine);
   const cloudParts = parseLineComponents(cloudLine);
 
-  let finalMedication = localParts.medication;
-  let finalDosage = localParts.dosage;
-  let finalFrequency = localParts.frequency;
-
-  let localMatch: any = null;
-  let cloudMatch: any = null;
-
-  if (matchDrug) {
-    localMatch = await matchDrug(localParts.medication || '');
-    cloudMatch = await matchDrug(cloudParts.medication || '');
-
-    if (localMatch.matched && cloudMatch.matched) {
-      finalMedication = cloudParts.medication;
-    } else if (localMatch.matched && !cloudMatch.matched) {
-      finalMedication = localParts.medication;
-    } else if (!localMatch.matched && cloudMatch.matched) {
-      finalMedication = cloudParts.medication;
-    } else {
-      finalMedication = cloudParts.medication || localParts.medication;
-    }
-  } else {
-    finalMedication = cloudParts.medication || localParts.medication;
-  }
-
-  if (localParts.frequency && cloudParts.frequency) {
-    finalFrequency = cloudParts.frequency;
-  } else {
-    finalFrequency = cloudParts.frequency || localParts.frequency;
-  }
-
-  if (localParts.dosage && cloudParts.dosage) {
-    finalDosage = cloudParts.dosage;
-  } else {
-    finalDosage = cloudParts.dosage || localParts.dosage;
-  }
+  // Since the cloud VLM is significantly more capable, we trust and prioritize its
+  // medication, dosage, and frequency extractions when they are present.
+  const finalMedication = cloudParts.medication || localParts.medication;
+  const finalDosage = cloudParts.dosage || localParts.dosage;
+  const finalFrequency = cloudParts.frequency || localParts.frequency;
 
   return [finalMedication, finalDosage, finalFrequency].filter(Boolean).join(' ');
 };
 
 const resolveHybridLines = async (
   localText: string,
-  cloudText: string,
-  matchDrug?: (text: string) => Promise<any>
+  cloudText: string
 ): Promise<string> => {
   const localLines = localText.split('\n').map(l => l.trim()).filter(Boolean);
   const cloudLines = cloudText.split('\n').map(l => l.trim()).filter(Boolean);
@@ -154,7 +122,7 @@ const resolveHybridLines = async (
       continue;
     }
     
-    const resolved = await resolveLineDisagreement(localLine, cloudLine, matchDrug);
+    const resolved = await resolveLineDisagreement(localLine, cloudLine);
     resolvedLines.push(resolved);
   }
   
@@ -436,7 +404,7 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
 
             if (cloudResultText) {
               appendLog('[Orchestrator] Cloud background refinement received. Merging tracks...');
-              const mergedText = await resolveHybridLines(localText, cloudResultText, matchDrug);
+              const mergedText = await resolveHybridLines(localText, cloudResultText);
               appendLog(`[Orchestrator] Resolved hybrid refined text: "${mergedText.replace(/\n/g, ' | ')}"`);
               onRefined({ text: mergedText, source: 'cloud' });
             }

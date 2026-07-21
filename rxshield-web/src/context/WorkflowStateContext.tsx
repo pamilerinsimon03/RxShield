@@ -130,7 +130,13 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
     });
 
     workerClientRef.current = client;
-    ocrServiceRef.current = new OcrService();
+    const ocrService = new OcrService();
+    ocrServiceRef.current = ocrService;
+
+    // Pre-initialize the local ONNX model in the background immediately on mount
+    ocrService.init().catch(err => {
+      console.error('[WorkflowStateContext] Failed to pre-initialize local ONNX model:', err);
+    });
 
     return () => {
       if (workerClientRef.current) {

@@ -779,18 +779,24 @@ const api = {
         }
       };
 
-      // Run inference on all segmented word boxes
+      // Run inference on all segmented word boxes in parallel
+      const wordResults = await Promise.all(
+        wordBoxes.map(async (box) => {
+          const subBuffer = extractSubImage(binarizedBuffer, width, box);
+          const [wordL, wordS] = await Promise.all([
+            runInferenceOnSegment(subBuffer, box, preprocessLetterbox),
+            runInferenceOnSegment(subBuffer, box, preprocessStretched)
+          ]);
+          return { wordL, wordS };
+        })
+      );
+
       const inferenceCache: Array<{ wordL: string; wordS: string }> = [];
       let preMatchedGeneric: string | null = null;
       let highestConfidence = 0;
 
-      for (let i = 0; i < wordBoxes.length; i++) {
-        const box = wordBoxes[i];
-        const subBuffer = extractSubImage(binarizedBuffer, width, box);
-        
-        const wordL = await runInferenceOnSegment(subBuffer, box, preprocessLetterbox);
-        const wordS = await runInferenceOnSegment(subBuffer, box, preprocessStretched);
-        
+      for (let i = 0; i < wordResults.length; i++) {
+        const { wordL, wordS } = wordResults[i];
         inferenceCache.push({ wordL, wordS });
 
         // Update pre-matched generic candidate based on highest match confidence
