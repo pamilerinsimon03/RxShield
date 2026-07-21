@@ -17,7 +17,6 @@ export interface WorkflowState {
   errorMsg: string | null;
   isProcessing: boolean;
   capturedImageUri: string | null;
-  isOnline: boolean;
 }
 
 interface WorkflowContextProps {
@@ -42,75 +41,15 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [capturedImageUri, setCapturedImageUri] = useState<string | null>(null);
-  const [isOnline, setIsOnline] = useState<boolean>(true);
 
   const { matchDrug, isDbReady, query } = useDatabase();
   const workerClientRef = useRef<RxShieldWorkerClient | null>(null);
   const ocrServiceRef = useRef<OcrService | null>(null);
 
-  useEffect(() => {
-    if (typeof navigator !== 'undefined') {
-      setIsOnline(navigator.onLine);
-    }
-
-    const checkRealStatus = async () => {
-      if (typeof navigator === 'undefined') return;
-      if (!navigator.onLine) {
-        setIsOnline(false);
-        return;
-      }
-      try {
-        const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), 3000);
-        const res = await fetch('https://www.google.com/generate_204', {
-          method: 'GET',
-          mode: 'no-cors',
-          signal: controller.signal,
-          cache: 'no-store'
-        });
-        clearTimeout(id);
-        // If fetch returns 504/503/etc (e.g. from service worker fallbacks) or fails, treat as offline.
-        // Opaque response from generate_204 in 'no-cors' mode has status 0 or 204.
-        if (res.status === 200 || res.status === 204 || res.status === 0 || res.type === 'opaque') {
-          setIsOnline(true);
-        } else {
-          setIsOnline(false);
-        }
-      } catch (e) {
-        setIsOnline(false);
-      }
-    };
-
-    checkRealStatus();
-
-    const handleOnline = () => {
-      checkRealStatus();
-    };
-    const handleOffline = () => {
-      setIsOnline(false);
-    };
-
-    if (typeof window !== 'undefined') {
-      window.addEventListener('online', handleOnline);
-      window.addEventListener('offline', handleOffline);
-    }
-
-    const intervalId = setInterval(checkRealStatus, 10000);
-
-    return () => {
-      if (typeof window !== 'undefined') {
-        window.removeEventListener('online', handleOnline);
-        window.removeEventListener('offline', handleOffline);
-      }
-      clearInterval(intervalId);
-    };
-  }, []);
-
   const { parsePrescription } = useHybridPrescriptionParser({
     ocrServiceRef,
     appendLog: (log: string) => setLogs((prev) => [...prev, log]),
-    matchDrug,
-    isOnline
+    matchDrug
   });
 
   useEffect(() => {
@@ -529,7 +468,6 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
     errorMsg,
     isProcessing,
     capturedImageUri,
-    isOnline,
   };
 
   return (
