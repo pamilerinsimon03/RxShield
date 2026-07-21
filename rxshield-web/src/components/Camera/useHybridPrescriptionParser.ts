@@ -293,6 +293,7 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
         };
 
         const runGeminiRequest = async (model: string, timeoutMs: number): Promise<string> => {
+          console.log(`[Cloud Track] Dispatching fetch to Gemini (${model})...`);
           appendLog(`[Cloud Track] Dispatching fetch to Gemini (${model})...`);
           const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
           
@@ -305,21 +306,27 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
           }, timeoutMs);
 
           if (!response.ok) {
+            const errText = await response.text().catch(() => '');
+            console.error(`[Cloud Track] Gemini API response failure (${model}): status=${response.status}`, errText);
             throw new Error(`Gemini API response failure (${model}): ${response.status} ${response.statusText}`);
           }
 
           const data = await response.json();
           const jsonText = data.candidates?.[0]?.content?.parts?.[0]?.text;
           if (!jsonText) {
+            console.error(`[Cloud Track] Empty payload returned from Gemini (${model}):`, data);
             throw new Error(`Empty payload returned from Gemini (${model}).`);
           }
 
+          console.log(`[Cloud Track] Gemini (${model}) raw payload:\n`, jsonText);
           const tokens = parseCloudResponse(jsonText);
+          console.log(`[Cloud Track] Gemini (${model}) parsed result:\n`, tokens);
           appendLog(`[Cloud Track] Gemini (${model}) parsed result:\n${tokens}`);
           return tokens;
         };
 
         const runGroqRequest = async (groqKey: string, timeoutMs: number): Promise<string> => {
+          console.log('[Cloud Track] Dispatching fetch to Groq (qwen/qwen3.6-27b)...');
           appendLog('[Cloud Track] Dispatching fetch to Groq (qwen/qwen3.6-27b)...');
           const url = 'https://api.groq.com/openai/v1/chat/completions';
           
@@ -357,16 +364,21 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
           }, timeoutMs);
 
           if (!response.ok) {
+            const errText = await response.text().catch(() => '');
+            console.error(`[Cloud Track] Groq API response failure: status=${response.status}`, errText);
             throw new Error(`Groq API response failure: ${response.status} ${response.statusText}`);
           }
 
           const data = await response.json();
           const jsonText = data.choices?.[0]?.message?.content;
           if (!jsonText) {
+            console.error(`[Cloud Track] Empty payload returned from Groq:`, data);
             throw new Error('Empty payload returned from Groq.');
           }
 
+          console.log(`[Cloud Track] Groq raw payload:\n`, jsonText);
           const tokens = parseCloudResponse(jsonText);
+          console.log(`[Cloud Track] Groq parsed result:\n`, tokens);
           appendLog(`[Cloud Track] Groq parsed result:\n${tokens}`);
           return tokens;
         };
@@ -395,6 +407,7 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
         // Run cloud refinement asynchronously to keep the UI responsive
         (async () => {
           try {
+            console.log('[Orchestrator] Starting cloud VLM background track...');
             const cloudResultText = await Promise.race([
               runCloudTrack(),
               new Promise<string>((_, reject) =>
@@ -403,12 +416,15 @@ Do not hallucinate or add any other text. Output strictly valid JSON matching th
             ]);
 
             if (cloudResultText) {
+              console.log('[Orchestrator] Cloud background refinement received:', cloudResultText);
               appendLog('[Orchestrator] Cloud background refinement received. Merging tracks...');
               const mergedText = await resolveHybridLines(localText, cloudResultText);
+              console.log('[Orchestrator] Merged hybrid text:', mergedText);
               appendLog(`[Orchestrator] Resolved hybrid refined text: "${mergedText.replace(/\n/g, ' | ')}"`);
               onRefined({ text: mergedText, source: 'cloud' });
             }
           } catch (err) {
+            console.error('[Orchestrator] Cloud background refinement failed or timed out:', err);
             appendLog(`[Orchestrator] Cloud background refinement failed or timed out: ${err instanceof Error ? err.message : String(err)}`);
           }
         })();

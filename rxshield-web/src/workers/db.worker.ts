@@ -253,7 +253,7 @@ const api = {
             p,
             arrayBuffer.byteLength,
             arrayBuffer.byteLength,
-            sqlite3.capi.SQLITE_DESERIALIZE_FREEONCLOSE
+            sqlite3.capi.SQLITE_DESERIALIZE_FREEONCLOSE | (sqlite3.capi.SQLITE_DESERIALIZE_RESIZEABLE || 0x02)
           );
           db.checkRc(rc);
           console.log('In-memory database seeded successfully.');
