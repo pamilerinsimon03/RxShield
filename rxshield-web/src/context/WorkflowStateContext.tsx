@@ -17,6 +17,7 @@ export interface WorkflowState {
   errorMsg: string | null;
   isProcessing: boolean;
   capturedImageUri: string | null;
+  isOnline: boolean;
 }
 
 interface WorkflowContextProps {
@@ -41,6 +42,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [capturedImageUri, setCapturedImageUri] = useState<string | null>(null);
+  const [isOnline, setIsOnline] = useState<boolean>(true);
 
   const { matchDrug, isDbReady, query } = useDatabase();
   const workerClientRef = useRef<RxShieldWorkerClient | null>(null);
@@ -137,6 +139,57 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
       if (ocrServiceRef.current) {
         ocrServiceRef.current.terminate();
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let active = true;
+
+    const checkStatus = async () => {
+      if (typeof navigator === 'undefined') return;
+      if (!navigator.onLine) {
+        if (active) setIsOnline(false);
+        return;
+      }
+      try {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), 2000);
+        await fetch('https://www.google.com/generate_204', {
+          method: 'GET',
+          mode: 'no-cors',
+          signal: controller.signal,
+          cache: 'no-store'
+        });
+        clearTimeout(id);
+        if (active) setIsOnline(true);
+      } catch (e) {
+        if (active) setIsOnline(navigator.onLine);
+      }
+    };
+
+    if (typeof navigator !== 'undefined') {
+      setIsOnline(navigator.onLine);
+    }
+    checkStatus();
+
+    const goOnline = () => {
+      checkStatus();
+    };
+    const goOffline = () => {
+      if (active) setIsOnline(false);
+    };
+
+    window.addEventListener('online', goOnline);
+    window.addEventListener('offline', goOffline);
+
+    const intervalId = setInterval(checkStatus, 10000);
+
+    return () => {
+      active = false;
+      window.removeEventListener('online', goOnline);
+      window.removeEventListener('offline', goOffline);
+      clearInterval(intervalId);
     };
   }, []);
 
@@ -379,7 +432,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
         ocrServiceRef.current = new OcrService();
       }
 
-      const parseResult = await parsePrescription(rgbaBuffer, width, height, scanMode, (res) => {
+      const parseResult = await parsePrescription(rgbaBuffer, width, height, scanMode, isOnline, (res) => {
         evaluateExtractionResult(res.text, res.source);
       });
       await evaluateExtractionResult(parseResult.text, parseResult.source);
@@ -468,6 +521,7 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
     errorMsg,
     isProcessing,
     capturedImageUri,
+    isOnline,
   };
 
   return (
