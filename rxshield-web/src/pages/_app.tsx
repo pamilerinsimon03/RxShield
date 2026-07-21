@@ -5,8 +5,10 @@ import { DatabaseProvider } from '@/context/DatabaseContext';
 
 const App = ({ Component, pageProps }: AppProps): JSX.Element => {
   useEffect(() => {
+    let cleanup: (() => void) | undefined;
+
     if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
+      const registerSW = () => {
         navigator.serviceWorker
           .register('/sw.js')
           .then((registration) => {
@@ -15,8 +17,17 @@ const App = ({ Component, pageProps }: AppProps): JSX.Element => {
           .catch((error) => {
             console.error('[App] Service Worker registration failed:', error);
           });
-      });
+      };
+
+      if (document.readyState === 'complete') {
+        registerSW();
+      } else {
+        window.addEventListener('load', registerSW);
+        cleanup = () => window.removeEventListener('load', registerSW);
+      }
     }
+
+    return cleanup;
   }, []);
 
   return (

@@ -57,8 +57,13 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(event.request.url);
 
-  // Avoid intercepting dev HMR or Chrome extensions
-  if (url.pathname.includes('/_next/webpack-hmr') || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
+  // Avoid intercepting dev HMR, Chrome extensions, or connectivity checks
+  if (
+    url.pathname.includes('/_next/webpack-hmr') || 
+    url.hostname === 'www.google.com' ||
+    url.pathname.includes('generate_204') ||
+    (url.protocol !== 'http:' && url.protocol !== 'https:')
+  ) {
     return;
   }
 

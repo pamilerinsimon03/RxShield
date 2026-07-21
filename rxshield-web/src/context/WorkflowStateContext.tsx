@@ -62,14 +62,20 @@ export const WorkflowStateProvider: React.FC<{ children: React.ReactNode }> = ({
       try {
         const controller = new AbortController();
         const id = setTimeout(() => controller.abort(), 3000);
-        await fetch('https://www.google.com/generate_204', {
+        const res = await fetch('https://www.google.com/generate_204', {
           method: 'GET',
           mode: 'no-cors',
           signal: controller.signal,
           cache: 'no-store'
         });
         clearTimeout(id);
-        setIsOnline(true);
+        // If fetch returns 504/503/etc (e.g. from service worker fallbacks) or fails, treat as offline.
+        // Opaque response from generate_204 in 'no-cors' mode has status 0 or 204.
+        if (res.status === 200 || res.status === 204 || res.status === 0 || res.type === 'opaque') {
+          setIsOnline(true);
+        } else {
+          setIsOnline(false);
+        }
       } catch (e) {
         setIsOnline(false);
       }
